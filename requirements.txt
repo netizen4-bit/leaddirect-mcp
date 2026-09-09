@@ -1,0 +1,5 @@
+fastmcp
+ddgs
+playwright
+pandas
+pydantic
