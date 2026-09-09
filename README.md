@@ -14,20 +14,18 @@ Before installing, you need a few basic tools installed on your computer:
 3. **An MCP-Compatible AI Client** — You need an AI to command the scraper. Choose one:
    * **[Claude Desktop](https://claude.ai/download)** (Recommended for ease of use)
    * **[Cursor IDE](https://cursor.sh/)** (For developers)
-   * **Antigravity CLI** (For local terminal users)
+   * **[Antigravity CLI] (https://antigravity.google/product/antigravity-cli)** (For local terminal users)
 
 ---
 ## 🚀 Quick Start Guide
 
 Open your terminal (**Command Prompt** or **PowerShell** on Windows, or **Terminal** on Mac/Linux) and run these commands exactly as written:
 
-```bash
+---bash
 git clone [https://github.com/netizen4-bit/leaddirect-mcp.git](https://github.com/netizen4-bit/leaddirect-mcp.git)
 cd leaddirect-mcp
 pip install -r requirements.txt
-
 ---
-
 ## Connecting to your AI (MCP Client Configuration)
 To let your AI use this scraper, you must tell it where this folder is located on your computer.
 
@@ -36,7 +34,7 @@ Add the following code to your AI client's configuration file (e.g., claude_desk
 
 ⚠️ IMPORTANT: You MUST change the "args" path below to match the exact location where you downloaded this folder on your computer!
 
-```json
+---json
 {
   "mcpServers": {
     "leaddirect": {
@@ -45,9 +43,10 @@ Add the following code to your AI client's configuration file (e.g., claude_desk
     }
   }
 }
-```
-(Example for Windows: "C:\\Users\\YOUR_NAME\\Documents\\leaddirect-mcp\\server.py")
-(Example for Mac: "/Users/YOUR_NAME/Documents/leaddirect-mcp/server.py")
+---
+
+* **(Example for Windows: "C:\\Users\\YOUR_NAME\\Documents\\leaddirect-mcp\\server.py")
+* **(Example for Mac: "/Users/YOUR_NAME/Documents/leaddirect-mcp/server.py")
 
 ---
 
@@ -55,9 +54,9 @@ Add the following code to your AI client's configuration file (e.g., claude_desk
 
 ```
 leaddirect-mcp/
-├── server.py          # The core bridge that connects the tools to your AI client.
-├── agent.py           # Script designed for Local LLM. It connects directly to local Ollama setups, running models completely offline for maximum privacy and zero token costs.
-├── lead_hunter.py     # The scraping engine that does the actual web searching.
+├── server.py          # The core Bridge. Connects the tools to your AI client.
+├── agent.py           # The Agent. Designed for Local LLM. It connects directly to local Ollama setups, running models completely offline for maximum privacy and zero token costs.
+├── lead_hunter.py     # The scraping engine ( the tool)  that does the actual web searching.
 ├── run_search.py      # A manual terminal runner for testing outside of an AI environment.
 ├── requirements.txt   # Python dependencies
 └── README.md          # This file
