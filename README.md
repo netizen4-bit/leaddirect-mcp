@@ -17,29 +17,14 @@ Before installing, you need a few basic tools installed on your computer:
    * **Antigravity CLI** (For local terminal users)
 
 ---
-
 ## 🚀 Quick Start Guide
 
-Open your terminal (**Command Prompt** or **PowerShell** on Windows, or **Terminal** on Mac/Linux) and type these commands exactly as written:
+Open your terminal (**Command Prompt** or **PowerShell** on Windows, or **Terminal** on Mac/Linux) and run these commands exactly as written:
 
-**1. Download the tool to your computer:**
 ```bash
 git clone [https://github.com/netizen4-bit/leaddirect-mcp.git](https://github.com/netizen4-bit/leaddirect-mcp.git)
 cd leaddirect-mcp
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
-```
-
-### 3. Run the server
-
-```bash
-python server.py
-# or
-mcp dev server.py
-```
 
 ---
 
@@ -63,16 +48,17 @@ Add the following code to your AI client's configuration file (e.g., claude_desk
 ```
 (Example for Windows: "C:\\Users\\YOUR_NAME\\Documents\\leaddirect-mcp\\server.py")
 (Example for Mac: "/Users/YOUR_NAME/Documents/leaddirect-mcp/server.py")
+
 ---
 
 ## Project Structure
 
 ```
 leaddirect-mcp/
-├── server.py          # FastMCP server — all MCP tools and pipeline modules
-├── agent.py           # Ollama-based autonomous agent that consumes the tools
-├── lead_hunter.py     # Standalone lead hunting utilities
-├── run_search.py      # CLI search runner
+├── server.py          # The core bridge that connects the tools to your AI client.
+├── agent.py           # Script designed for Local LLM. It connects directly to local Ollama setups, running models completely offline for maximum privacy and zero token costs.
+├── lead_hunter.py     # The scraping engine that does the actual web searching.
+├── run_search.py      # A manual terminal runner for testing outside of an AI environment.
 ├── requirements.txt   # Python dependencies
 └── README.md          # This file
 ```
