@@ -15,6 +15,12 @@ EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
 PHONE_REGEX = re.compile(r'\(?\b[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b')
 INVALID_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.css', '.js')
 
+# Social media & WhatsApp regex patterns (run against raw HTML to capture href attributes)
+LINKEDIN_REGEX = re.compile(r'https?://(?:www\.)?linkedin\.com/(?:company|in)/[a-zA-Z0-9_-]+/?', re.IGNORECASE)
+WHATSAPP_REGEX = re.compile(r'https?://(?:wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)/[a-zA-Z0-9+/?=&_-]+', re.IGNORECASE)
+FACEBOOK_REGEX = re.compile(r'https?://(?:www\.)?facebook\.com/[a-zA-Z0-9._-]+/?', re.IGNORECASE)
+INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/[a-zA-Z0-9._-]+/?', re.IGNORECASE)
+
 ollama_client = AsyncClient(host='http://localhost:11434')
 
 def is_valid_email(email):
@@ -35,6 +41,12 @@ async def scrape_company_data(base_url, p_browser):
     
     emails = set()
     phones = set()
+    socials = {
+        'linkedin': set(),
+        'whatsapp': set(),
+        'facebook': set(),
+        'instagram': set(),
+    }
     raw_text_chunks = []
 
     # Use a realistic User-Agent to avoid simple bot blocks
@@ -62,6 +74,13 @@ async def scrape_company_data(base_url, p_browser):
                 # Extract phones via regex
                 found_phones = PHONE_REGEX.findall(text)
                 phones.update(found_phones)
+
+            # Extract social links from raw HTML (not innerText) to capture href attributes
+            html_content = await page.content()
+            socials['linkedin'].update(LINKEDIN_REGEX.findall(html_content))
+            socials['whatsapp'].update(WHATSAPP_REGEX.findall(html_content))
+            socials['facebook'].update(FACEBOOK_REGEX.findall(html_content))
+            socials['instagram'].update(INSTAGRAM_REGEX.findall(html_content))
                 
         except Exception:
             # Fail silently on timeouts or 404s for subpages
@@ -74,6 +93,7 @@ async def scrape_company_data(base_url, p_browser):
     return {
         'emails': list(emails),
         'phones': list(phones),
+        'socials': {k: list(v) for k, v in socials.items()},
         'raw_text': " ".join(raw_text_chunks)[:4000] # Cap total text length for LLM
     }
 
@@ -138,6 +158,12 @@ async def main():
             # Deep scrape
             scraped_data = await scrape_company_data(base_url, browser)
             print(f"   Found {len(scraped_data['emails'])} emails and {len(scraped_data['phones'])} phones.")
+            socials = scraped_data.get('socials', {})
+            social_count = sum(len(v) for v in socials.values())
+            if social_count:
+                print(f"   Found {social_count} social link(s): "
+                      f"LI={len(socials.get('linkedin', []))} WA={len(socials.get('whatsapp', []))} "
+                      f"FB={len(socials.get('facebook', []))} IG={len(socials.get('instagram', []))}")
             
             # Normalize text
             summary, tags = "", ""
@@ -152,6 +178,10 @@ async def main():
                 "Website URL": base_url,
                 "Discovered Emails": ", ".join(scraped_data['emails']),
                 "Phone Numbers": ", ".join(scraped_data['phones']),
+                "LinkedIn": ", ".join(socials.get('linkedin', [])),
+                "WhatsApp": ", ".join(socials.get('whatsapp', [])),
+                "Facebook": ", ".join(socials.get('facebook', [])),
+                "Instagram": ", ".join(socials.get('instagram', [])),
                 "Page Title/Summary": summary,
                 "Industry Tags": tags
             })
@@ -161,7 +191,7 @@ async def main():
     # Compile directly into CSV using Python's built-in csv module
     file_name = "canadian_agri_leads.csv"
     with open(file_name, mode='w', newline='', encoding='utf-8') as f:
-        fieldnames = ["Company Name", "Website URL", "Discovered Emails", "Phone Numbers", "Page Title/Summary", "Industry Tags"]
+        fieldnames = ["Company Name", "Website URL", "Discovered Emails", "Phone Numbers", "LinkedIn", "WhatsApp", "Facebook", "Instagram", "Page Title/Summary", "Industry Tags"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(leads)
