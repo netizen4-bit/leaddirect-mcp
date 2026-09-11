@@ -1,6 +1,6 @@
 # LeadDirect-MCP
 
-A local, for Agentic Workflow Model Context Protocol (MCP) tool that generates verified, direct B2B contacts while minimizing LLM token spend. Built specifically for Small Companies and Startups to run completely locally and privately.
+A local Model Context Protocol (MCP) tool, for Agentic Workflow that generates verified, direct B2B contacts while minimizing LLM token spend. Built specifically for Small Companies and Startups to run completely locally and privately.
 
 LeadDirect connects your AI assistant directly to the web. It autonomously discovers company contacts, scrapes homepages, and decodes hidden data to extract **direct employee email addresses** (going beyond generic `info@` or `sales@` inboxes). Additionally, it captures key social media and communication links—including **LinkedIn, WhatsApp, Facebook, and Instagram**—and verifies that the emails are active, all without expensive API subscriptions.
 
