@@ -1,6 +1,6 @@
 # LeadDirect-MCP
 
-A local, agentic Model Context Protocol (MCP) tool that generates verified, direct B2B contacts while minimizing LLM token spend. Built specifically for Small Companies and Startups to run completely locally and privately.
+A local, for Agentic Workflow Model Context Protocol (MCP) tool that generates verified, direct B2B contacts while minimizing LLM token spend. Built specifically for Small Companies and Startups to run completely locally and privately.
 
 LeadDirect connects your AI assistant directly to the web. It autonomously discovers company contacts, scrapes homepages, and decodes hidden data to extract **direct employee email addresses** (going beyond generic `info@` or `sales@` inboxes). Additionally, it captures key social media and communication links—including **LinkedIn, WhatsApp, Facebook, and Instagram**—and verifies that the emails are active, all without expensive API subscriptions.
 
@@ -23,7 +23,7 @@ Before installing, you need a few basic tools installed on your computer:
 Open your terminal (**Command Prompt** or **PowerShell** on Windows, or **Terminal** on Mac/Linux) and run these commands:
 
 ```bash
-git clone [https://github.com/netizen4-bit/leaddirect-mcp.git](https://github.com/netizen4-bit/leaddirect-mcp.git)
+git clone https://github.com/netizen4-bit/leaddirect-mcp
 cd leaddirect-mcp
 pip install -r requirements.txt
 ```
