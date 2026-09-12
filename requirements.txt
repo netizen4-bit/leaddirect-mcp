@@ -3,3 +3,6 @@ ddgs
 playwright
 pandas
 pydantic
+phonenumbers
+httpx
+beautifulsoup4
