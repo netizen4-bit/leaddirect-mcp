@@ -36,7 +36,7 @@ import dns.asyncresolver
 from bs4 import BeautifulSoup
 
 mcp = FastMCP("LeadDirect")
-CSV_FILE = r"C:\Users\lenovo\Desktop\leads_output.csv"
+CSV_FILE = os.path.join(os.path.expanduser("~"), "Desktop", "leads_output.csv")
 
 
 # ---------------------------------------------------------------------------
