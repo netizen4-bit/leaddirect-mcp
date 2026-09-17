@@ -1,4 +1,5 @@
-fastmcp
+fastmcp[client]
+mcp<2
 ddgs
 playwright
 pandas
