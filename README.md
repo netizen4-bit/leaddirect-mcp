@@ -106,6 +106,6 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 ## ☕ Support the Developer
 
-If this agent saves you time, and if you use my other open-source workflow tools, consider supporting the development. Your backing helps keep these small AI tools projects completely free.
+If this tool saved you day, and if you use my other open-source workflow tools, consider supporting the development. Your backing helps keep these small AI tools projects completely free.
 
 [![Patreon](https://img.shields.io/badge/PATREON-SUPPORT%20ME-orange?style=for-the-badge&logo=patreon)](https://www.patreon.com/c/netizen4_bit)
