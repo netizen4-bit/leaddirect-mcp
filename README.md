@@ -65,26 +65,50 @@ LeadDirect exposes three native MCP tools:
 
 ---
 
-## 📦 Prerequisites & Installation
+## 📦 Prerequisites & Quick Setup
 
 ### 1. Prerequisites
 * **Python (3.10+)**
 * **Git**
-* An MCP-compatible client: **Antigravity CLI / IDE**, **Claude Desktop**, or **Cursor**.
+* An MCP-compatible client (**Antigravity CLI / IDE**, **Claude Desktop**, **Cursor**) or a local **Ollama** setup.
 
-### 2. Quick Setup
-Clone the repository and install the dependencies:
+### 2. Installation
+Clone the repository, install Python dependencies, and install the headless browser binary for Playwright:
 ```bash
 git clone https://github.com/netizen4-bit/leaddirect-mcp.git
 cd leaddirect-mcp
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 ---
 
-## 🔌 Connecting to Your AI Client
+## 💻 Standalone CLI Runners (No IDE Required)
 
-Add LeadDirect to your MCP configuration file (e.g. `claude_desktop_config.json` or your Antigravity / Cursor MCP settings):
+LeadDirect includes native CLI runners so you can execute lead discovery completely standalone without a desktop AI interface:
+
+### 1. Autonomous Agent with Local LLM (`agent.py`)
+Runs an autonomous lead generation agent connected to your local Ollama instance (e.g. `qwen2.5:7b`):
+```bash
+# Ensure Ollama is running, then launch:
+python agent.py
+```
+Type your objective directly into the terminal prompt (e.g. *"Find 5 precision agriculture equipment distributors in Ontario"*).
+
+### 2. Standalone Batch Query Runner (`run_search.py`)
+Executes targeted, multi-query distributor discovery batches directly and exports clean data to CSV:
+```bash
+python run_search.py
+```
+*(Results are automatically saved to `output/leads_output.csv`)*.
+
+---
+
+## 🔌 Connecting to Your AI Client (MCP Configuration)
+
+Add LeadDirect to your MCP configuration file (e.g. `claude_desktop_config.json` or your Antigravity / Cursor MCP configuration).
+
+> ⚠️ **Note on Windows Paths:** In JSON strings, backslashes must be escaped (`\\`) or written with forward slashes (`/`) to prevent invalid escape errors (`\U`, `\P`, `\l`).
 
 ```json
 {
@@ -92,16 +116,18 @@ Add LeadDirect to your MCP configuration file (e.g. `claude_desktop_config.json`
     "leaddirect": {
       "command": "python",
       "args": [
-        "C:\YOUR\PATH\TO\leaddirect-mcp\server.py"
+        "C:/YOUR/PATH/TO/leaddirect-mcp/server.py"
       ],
       "env": {
-        "LEADDIRECT_CSV_OUTPUT": "C:\YOUR\PATH\TO\leaddirect-mcp\output\leads_output.csv"
+        "LEADDIRECT_CSV_OUTPUT": "C:/YOUR/PATH/TO/leaddirect-mcp/output/leads_output.csv"
       }
     }
   }
 }
 ```
-*(On macOS/Linux, adjust the file paths accordingly, e.g. `/home/user/leaddirect-mcp/server.py`)*
+
+* *(Alternative Windows escaped backslashes: `"C:\\YOUR\\PATH\\TO\\leaddirect-mcp\\server.py"`)*
+* *(macOS / Linux: `"/Users/YOUR_NAME/Documents/leaddirect-mcp/server.py"`)*
 
 ---
 
