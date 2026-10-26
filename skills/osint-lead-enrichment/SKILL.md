@@ -1,24 +1,36 @@
 ---
 name: osint-lead-enrichment
-description: Systematic OSINT enrichment protocol using SSL certificate transparency subdomains, mail provider fingerprinting, and zero-bounce SMTP verification.
-version: 1.0.0
+description: Executes corporate OSINT enrichment using SSL Certificate Transparency subdomains (crt.sh), DNS MX mail fingerprinting, Schema.org extraction, and zero-bounce SMTP verification. Use when enriching a domain, uncovering B2B portals, or calling `osint_recon_domain` and `enrich_and_verify_contact`.
+license: MIT
+metadata:
+  version: "1.1.0"
 ---
 
 # OSINT Lead Enrichment Protocol
 
 ## Role & Purpose
-Orchestrates multi-layer corporate intelligence using `osint_recon_domain` and `enrich_and_verify_contact`. Uncovers hidden B2B gateways and identifies corporate email infrastructure without paid API subscriptions.
+Orchestrates multi-layer corporate intelligence by chaining `osint_recon_domain` outputs directly into `enrich_and_verify_contact` inputs. Uncovers hidden B2B gateways and verifies direct corporate emails with zero paid API subscriptions and minimal token spend.
 
-## 1. Reconnaissance Waterfall
-1. **Execute `osint_recon_domain`**:
-   - Check SSL Certificate Transparency logs (crt.sh) for subdomains like `wholesale.domain.com`, `b2b.domain.com`, `dealers.domain.com`, `portal.domain.com`.
-   - Inspect DNS MX records to determine the email provider:
-     - **Google Workspace** (`aspmx.l.google.com`): High confidence patterns are `{first}@{domain}` and `{first}.{last}@{domain}`.
-     - **Microsoft 365** (`mail.protection.outlook.com`): High confidence patterns are `{first}.{last}@{domain}` and `{f}{last}@{domain}`.
-     - **Zoho / Self-Hosted**: Probe for catch-all behavior.
-   - Extract Schema.org JSON-LD microdata for official legal entity names, direct telephone numbers, and verified social media links.
+## 1. Reconnaissance Waterfall (Strict Execution Order)
 
-2. **Execute `enrich_and_verify_contact`**:
-   - De-obfuscate Cloudflare-protected email links (`data-cfemail`).
-   - Run zero-bounce SMTP validation.
-   - If the domain has a catch-all configuration (`catch_all_domain: true`), prioritize scraped website emails over permuted guesses to avoid email bounce traps.
+### Step 1: Execute `osint_recon_domain(domain)` First
+Always run passive OSINT reconnaissance on the root domain before attempting deep contact scraping or SMTP permutation:
+- **Subdomain Routing (`crt.sh`):** Inspect the discovered SSL Certificate Transparency subdomains for B2B portals (`wholesale.domain.com`, `b2b.domain.com`, `dealers.domain.com`, `portal.domain.com`).
+  - *Action Rule:* If an active B2B or dealer subdomain is returned, pass that URL as the `website_url` argument when calling `enrich_and_verify_contact` in Step 2.
+- **Mail Provider Fingerprinting (DNS MX):** Use the detected MX provider to evaluate email permutation confidence:
+  - **Google Workspace (`aspmx.l.google.com`):** High confidence in `{first}@{domain}` and `{first}.{last}@{domain}`.
+  - **Microsoft 365 (`mail.protection.outlook.com`):** High confidence in `{first}.{last}@{domain}` and `{f}{last}@{domain}`.
+  - **Zoho / Self-Hosted SMTP:** Elevated catch-all likelihood; prioritize scraped website addresses over guessed permutations.
+- **Schema.org JSON-LD Microdata:** Record the official legal entity name, direct telephone number, and verified social links returned by the tool. If a verified direct email and phone are already present in Schema.org data, skip redundant scraping.
+
+### Step 2: Execute `enrich_and_verify_contact(domain, first_name, last_name, website_url)`
+- **Strict Anti-Hallucination on Names:**
+  - *Action Rule:* Only pass `first_name` and `last_name` if a real decision-maker's name was explicitly found in Step 1 metadata or on the company website. Never invent placeholder names (e.g., "John Doe"). If no executive name is known, omit `first_name` and `last_name` so the tool scrapes `/contact`, `/about`, and `/team` and decodes Cloudflare `data-cfemail` strings directly.
+- **Catch-All Bounce Defense (`catch_all_domain: true`):**
+  - *Action Rule:* If the tool reports `catch_all_domain: true`, discard unverified executive permutations and output only emails explicitly scraped from the website or Schema.org metadata to prevent bounce traps.
+
+## 2. Token Hygiene & Output Schema
+Never dump raw JSON responses from `osint_recon_domain` or `enrich_and_verify_contact` into the chat history. Summarize enriched intelligence in this compact Markdown table:
+
+| Legal Company Name | Domain / B2B Subdomain | Mail Provider (MX) | Verified Email | Phone | Catch-All / Status |
+|---|---|---|---|---|---|

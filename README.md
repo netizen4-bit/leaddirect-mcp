@@ -116,10 +116,10 @@ Add LeadDirect to your MCP configuration file (e.g. `claude_desktop_config.json`
     "leaddirect": {
       "command": "python",
       "args": [
-        "C:/YOUR/PATH/TO/leaddirect-mcp/server.py"
+        "C:\\YOUR\\PATH\\TO\\leaddirect-mcp\\server.py"
       ],
       "env": {
-        "LEADDIRECT_CSV_OUTPUT": "C:/YOUR/PATH/TO/leaddirect-mcp/output/leads_output.csv"
+        "LEADDIRECT_CSV_OUTPUT": "C:\\YOUR\\PATH\\TO\\leaddirect-mcp\\output\\leads_output.csv"
       }
     }
   }
