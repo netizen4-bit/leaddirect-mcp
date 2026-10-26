@@ -149,3 +149,11 @@ npx skills add netizen4-bit/leaddirect-mcp --skill osint-lead-enrichment
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for more information.
+
+---
+
+## ☕ Support the Developer
+
+If this tool saved you a day, and if you use my other open-source workflow tools, consider supporting the development. Your backing helps keep these small AI tools projects completely free.
+
+[![Patreon](https://img.shields.io/badge/Patreon-Support%20Me-F96854?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/netizen4_bit)
