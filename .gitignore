@@ -1,0 +1,14 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment & outputs
+.env
+output/
+*.csv
+leads_output.csv
+.DS_Store
+.idea/
+.vscode/

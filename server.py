@@ -1,59 +1,62 @@
 import sys
-import phonenumbers
+import os
 import re
+import csv
+import uuid
+import json
+import asyncio
+import unicodedata
+from urllib.parse import urlparse
+import httpx
+import dns.resolver
+import dns.asyncresolver
+import phonenumbers
+from bs4 import BeautifulSoup
+from ddgs import DDGS
+from fastmcp import FastMCP
+
+mcp = FastMCP("LeadDirect")
+
+# Portable output directory handling
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+CSV_FILE = os.environ.get("LEADDIRECT_CSV_OUTPUT") or os.path.join(OUTPUT_DIR, "leads_output.csv")
+
+
+def sanitize_email(e: str) -> str:
+    """Strips HTML artifacts, brackets, and unicode escape sequences from emails."""
+    if not e:
+        return ""
+    cleaned = re.sub(r"^(u003e|[<>'\"]|mailto:)", "", e, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[<>'\"]$", "", cleaned).strip().lower()
+    return cleaned
+
 
 def extract_marketplace_contacts(text: str, dynamic_region: str = None) -> dict:
     """Scans raw text for emails and global phone numbers."""
-    
-    # Extract emails using native Regex, ignoring image files
     email_pattern = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-    valid_emails = [e for e in re.findall(email_pattern, text) if not e.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))]
+    raw_emails = re.findall(email_pattern, text)
+    valid_emails = [
+        sanitize_email(e) for e in raw_emails
+        if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'))
+    ]
+    valid_emails = [e for e in valid_emails if e and "@" in e]
     
-    # Extract phone numbers globally
     phones = []
-    for match in phonenumbers.PhoneNumberMatcher(text, dynamic_region):
-        # The match.number attribute is formatted to standard international layout
-        formatted_num = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
-        phones.append(formatted_num)
+    try:
+        for match in phonenumbers.PhoneNumberMatcher(text, dynamic_region):
+            formatted_num = phonenumbers.format_number(
+                match.number, phonenumbers.PhoneNumberFormat.INTERNATIONAL
+            )
+            phones.append(formatted_num)
+    except Exception:
+        pass
         
     return {
-        "emails": list(set(valid_emails)),
-        "phones": list(set(phones))
+        "emails": sorted(list(set(valid_emails))),
+        "phones": sorted(list(set(phones)))
     }
-import dns.resolver
-import dns.asyncresolver
-import asyncio
-import csv
-import os
-import re
-import uuid
-import unicodedata
-from urllib.parse import urlparse
-from ddgs import DDGS
-from fastmcp import FastMCP
-import httpx
-import dns.asyncresolver
-from bs4 import BeautifulSoup
 
-mcp = FastMCP("LeadDirect")
-CSV_FILE = os.path.join(os.path.expanduser("~"), "Desktop", "leads_output.csv")
-
-# ---------------------------------------------------------------------------
-# Usage counter & support message
-# ---------------------------------------------------------------------------
-_tool_execution_count = 0
-_PATREON_MESSAGE = (
-    "\n\nI hope you enjoy using this tool. Please show your support for my "
-    "further research and development project via patreon: "
-    "[https://www.patreon.com/c/netizen4_bit](https://www.patreon.com/c/netizen4_bit)"
-)
-
-
-def _increment_counter():
-    """Increment the global tool execution counter and return the new value."""
-    global _tool_execution_count
-    _tool_execution_count += 1
-    return _tool_execution_count
 
 # ---------------------------------------------------------------------------
 # 1. Cloudflare XOR De-obfuscator
@@ -61,7 +64,6 @@ def _increment_counter():
 
 def decode_cf_email(encoded_string: str) -> str:
     """Decode a Cloudflare-obfuscated email.
-
     The first two hex characters are the XOR key; every subsequent pair of hex
     characters is XOR'd against the key to reveal the original character.
     """
@@ -81,7 +83,9 @@ def extract_cf_emails(html: str) -> list[str]:
     # Method 1: data-cfemail attribute on any tag
     for tag in soup.find_all(attrs={"data-cfemail": True}):
         try:
-            emails.append(decode_cf_email(tag["data-cfemail"]))
+            email = sanitize_email(decode_cf_email(tag["data-cfemail"]))
+            if email and "@" in email:
+                emails.append(email)
         except (ValueError, IndexError):
             pass
 
@@ -91,7 +95,9 @@ def extract_cf_emails(html: str) -> list[str]:
         if "/cdn-cgi/l/email-protection#" in href:
             hex_part = href.split("#", 1)[-1]
             try:
-                emails.append(decode_cf_email(hex_part))
+                email = sanitize_email(decode_cf_email(hex_part))
+                if email and "@" in email:
+                    emails.append(email)
             except (ValueError, IndexError):
                 pass
 
@@ -172,13 +178,12 @@ async def _smtp_exchange(
 
 async def verify_email_smtp(email: str, mx_host: str) -> str:
     """Perform a zero-bounce SMTP verification against *mx_host*.
-
     Returns one of:
-        "VALID"       – 250 on RCPT TO
-        "INVALID"     – 550/551/553 on RCPT TO
-        "CATCH_ALL"   – server accepts a random UUID probe
-        "GREYLISTED"  – 4xx temporary response
-        "ERROR"       – connection or protocol failure
+        "VALID"       -> 250 on RCPT TO
+        "INVALID"     -> 550/551/553 on RCPT TO
+        "CATCH_ALL"   -> server accepts a random UUID probe
+        "GREYLISTED"  -> 4xx temporary response
+        "ERROR"       -> connection or protocol failure
     """
     domain = email.split("@", 1)[-1]
     try:
@@ -202,7 +207,7 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
         if code != 250:
             return "ERROR"
 
-        # --- Catch-all probe: random UUID address ---
+        # Catch-all probe: random UUID address
         random_addr = f"test-{uuid.uuid4().hex[:12]}@{domain}"
         code_catchall, _ = await _smtp_exchange(
             reader, writer, f"RCPT TO:<{random_addr}>"
@@ -237,14 +242,12 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 5. Existing synchronous discovery tool (unchanged)
+# 5. Core Discovery Tool
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 def find_distributors(query: str, target_leads: int = 10) -> str:
     """Finds B2B leads using DuckDuckGo, extracts emails/phones, and saves to CSV."""
-    count = _increment_counter()
-
     if not os.path.exists(CSV_FILE):
         with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(["Company", "Domain", "Email", "Phone"])
@@ -263,7 +266,9 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
 
     ignore_list = [
         "linkedin.com", "facebook.com", "yellowpages", "agdealer.com",
-        "kijiji.ca", "youtube.com", "instagram.com", "twitter.com", "wikipedia.org"
+        "kijiji.ca", "youtube.com", "instagram.com", "twitter.com",
+        "wikipedia.org", "clutch.co", "yelp.com", "zoominfo.com",
+        "apollo.io", "crunchbase.com", "glassdoor.com", "indeed.com"
     ]
     found_leads = []
 
@@ -298,9 +303,10 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
                     r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text
                 )
                 valid_emails = [
-                    e for e in emails
-                    if not e.endswith((".png", ".jpg", ".jpeg", ".svg", ".webp"))
+                    sanitize_email(e) for e in emails
+                    if not e.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp"))
                 ]
+                valid_emails = [e for e in valid_emails if e and "@" in e]
                 if valid_emails:
                     email = valid_emails[0]
 
@@ -328,14 +334,11 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
     for title, domain, email, phone in found_leads:
         md += f"| {title} | {domain} | {email} | {phone} |\n"
 
-    if count % 5 == 0:
-        md += _PATREON_MESSAGE
-
     return md
 
 
 # ---------------------------------------------------------------------------
-# 6. NEW — Async enrichment & verification tool
+# 6. Async Enrichment & Verification Tool
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -345,41 +348,33 @@ async def enrich_and_verify_contact(
     last_name: str | None = None,
     website_url: str | None = None,
 ) -> dict:
-    """
-    Enriches a target B2B lead by checking the domain website for obfuscated emails,
+    """Enriches a target B2B lead by checking the domain website for obfuscated emails,
     generating pattern permutations for the given executive, and performing zero-bounce
-    SMTP validation to identify the active direct email.
+    SMTP validation to identify active direct emails.
     """
-    count = _increment_counter()
-
+    clean_domain = domain.replace("https://", "").replace("http://", "").strip("/").split("/")[0].lower()
     result: dict = {
-        "domain": domain,
+        "domain": clean_domain,
         "mx_hosts": [],
         "scraped_emails": [],
         "cf_decoded_emails": [],
         "permuted_candidates": [],
         "verified": [],
+        "unverified_permutations": [],
         "catch_all_domain": False,
         "status": "ok",
     }
 
-    def _maybe_append_support(res: dict) -> dict:
-        if count % 5 == 0:
-            res["support_message"] = (
-                "I hope you enjoy using this tool. Please show your support for my "
-                "further research and development project via patreon: "
-                "[https://www.patreon.com/c/netizen4_bit](https://www.patreon.com/c/netizen4_bit)"
-            )
-        return res
-
-    # --- Step 1: Check for Marketplace or Resolve MX records ---
-    global_marketplaces = ["facebook.com", "instagram.com", "truckscout24.", "machineryzone.", "agriaffaires.", "europages.", "autoline."]
+    # Step 1: Check for Marketplace or Resolve MX records
+    global_marketplaces = [
+        "facebook.com", "instagram.com", "truckscout24.", "machineryzone.",
+        "agriaffaires.", "europages.", "autoline."
+    ]
     
-    is_marketplace = any(market in domain for market in global_marketplaces)
+    is_marketplace = any(market in clean_domain for market in global_marketplaces)
     
     if is_marketplace:
-        # Extract text directly for classifieds instead of checking MX
-        target_url = website_url or f"https://{domain}"
+        target_url = website_url or f"https://{clean_domain}"
         page_text = ""
         
         try:
@@ -393,26 +388,24 @@ async def enrich_and_verify_contact(
         except Exception:
             page_text = ""
 
-        tld = domain.split('.')[-1].upper()
+        tld = clean_domain.split('.')[-1].upper()
         region_hint = tld if len(tld) == 2 else None
 
         extracted_data = extract_marketplace_contacts(page_text, dynamic_region=region_hint)
-
         result["status"] = "marketplace_extracted"
         result["scraped_emails"] = extracted_data["emails"]
         result["phones"] = extracted_data["phones"]
-        return _maybe_append_support(result)
+        return result
         
     else:
-        # Standard corporate domain: proceed with DNS/MX verification
-        mx_hosts = await get_mx_hosts(domain)
+        mx_hosts = await get_mx_hosts(clean_domain)
         result["mx_hosts"] = mx_hosts
         if not mx_hosts:
             result["status"] = "no_mx_records"
-            return _maybe_append_support(result)
+            return result
 
-    # --- Step 2: Scrape website for emails ------------------------------------
-    target_url = website_url or f"https://{domain}"
+    # Step 2: Scrape website for direct contact emails
+    target_url = website_url or f"https://{clean_domain}"
     scraped_emails: set[str] = set()
     cf_emails: set[str] = set()
 
@@ -422,46 +415,47 @@ async def enrich_and_verify_contact(
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
     ) as client:
         for path in ("", "/contact", "/about", "/team"):
-            url = f"https://{domain}{path}" if path else target_url
+            url = f"https://{clean_domain}{path}" if path else target_url
             try:
                 resp = await client.get(url)
                 html = resp.text
 
-                # Plain-text regex emails
                 raw = re.findall(
                     r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", html
                 )
                 for e in raw:
-                    if not e.endswith((".png", ".jpg", ".jpeg", ".svg", ".webp")):
-                        scraped_emails.add(e.lower())
+                    sanitized = sanitize_email(e)
+                    if sanitized and not sanitized.endswith((".png", ".jpg", ".jpeg", ".svg", ".webp")):
+                        scraped_emails.add(sanitized)
 
-                # Cloudflare de-obfuscation
                 for e in extract_cf_emails(html):
-                    cf_emails.add(e.lower())
+                    sanitized = sanitize_email(e)
+                    if sanitized:
+                        cf_emails.add(sanitized)
             except Exception:
                 continue
 
     result["scraped_emails"] = sorted(scraped_emails)
     result["cf_decoded_emails"] = sorted(cf_emails)
 
-    # --- Step 3: Generate permutations ----------------------------------------
+    # Step 3: Generate permutations
     candidates: list[str] = []
     if first_name and last_name:
-        candidates = generate_email_permutations(first_name, last_name, domain)
+        candidates = generate_email_permutations(first_name, last_name, clean_domain)
         result["permuted_candidates"] = candidates
 
-    # --- Step 4: Combine all candidate emails ---------------------------------
+    # Step 4: Combine all candidate emails
     all_candidates = list(
-        dict.fromkeys(  # preserve order, deduplicate
+        dict.fromkeys(
             list(cf_emails) + list(scraped_emails) + candidates
         )
     )
 
     if not all_candidates:
         result["status"] = "no_email_candidates_found"
-        return _maybe_append_support(result)
+        return result
 
-    # --- Step 5: SMTP verification --------------------------------------------
+    # Step 5: Zero-Bounce SMTP verification
     primary_mx = mx_hosts[0]
     verified: list[dict] = []
 
@@ -470,15 +464,117 @@ async def enrich_and_verify_contact(
 
         if smtp_result == "CATCH_ALL":
             result["catch_all_domain"] = True
-            # Mark everything as catch-all; no point probing further
-            for remaining in all_candidates:
-                verified.append({"email": remaining, "smtp_status": "CATCH_ALL"})
+            result["status"] = "catch_all_domain"
+            result["unverified_permutations"] = all_candidates
+            for sc in scraped_emails:
+                verified.append({"email": sc, "smtp_status": "SCRAPED_VERIFIED_CATCHALL"})
             break
 
         verified.append({"email": email, "smtp_status": smtp_result})
 
     result["verified"] = verified
-    return _maybe_append_support(result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 7. NEW - Advanced Zero-Cost OSINT Reconnaissance Tool
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def osint_recon_domain(domain: str) -> dict:
+    """Performs zero-cost OSINT reconnaissance on a B2B domain without paid APIs:
+    - Discovers hidden wholesale/B2B subdomains via SSL Certificate Transparency logs (crt.sh).
+    - Identifies corporate mail infrastructure (Google Workspace, Microsoft 365, Zoho) via DNS MX/SPF.
+    - Extracts Schema.org JSON-LD corporate metadata (legal name, official telephone, social links).
+    """
+    clean_domain = domain.replace("https://", "").replace("http://", "").strip("/").split("/")[0].lower()
+    
+    recon = {
+        "domain": clean_domain,
+        "subdomains": [],
+        "mail_provider": "Unknown",
+        "mx_hosts": [],
+        "organization_meta": {
+            "legal_name": None,
+            "telephone": None,
+            "official_email": None,
+            "social_links": []
+        },
+        "status": "ok"
+    }
+
+    # 1. SSL Certificate Transparency Subdomain Enumeration (crt.sh)
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(f"https://crt.sh/?q=%25.{clean_domain}&output=json")
+            if res.status_code == 200:
+                data = res.json()
+                discovered = set()
+                for entry in data:
+                    name_val = entry.get("name_value", "")
+                    for sub in name_val.split("\n"):
+                        sub = sub.strip().lower()
+                        if "*" not in sub and sub.endswith(clean_domain) and sub != clean_domain:
+                            # Highlight B2B, wholesale, dealer, partner, or portal subdomains
+                            if any(k in sub for k in ["b2b", "wholesale", "distributor", "dealer", "portal", "partner", "shop", "app"]):
+                                discovered.add(sub)
+                recon["subdomains"] = sorted(list(discovered))[:15]
+    except Exception:
+        pass
+
+    # 2. DNS MX Provider Fingerprinting
+    try:
+        mx_hosts = await get_mx_hosts(clean_domain)
+        recon["mx_hosts"] = mx_hosts
+        mx_joined = " ".join(mx_hosts).lower()
+        if "google" in mx_joined or "aspmx" in mx_joined:
+            recon["mail_provider"] = "Google Workspace"
+        elif "outlook" in mx_joined or "protection" in mx_joined:
+            recon["mail_provider"] = "Microsoft 365"
+        elif "zoho" in mx_joined:
+            recon["mail_provider"] = "Zoho Mail"
+        elif "proton" in mx_joined:
+            recon["mail_provider"] = "Proton Mail"
+        elif mx_hosts:
+            recon["mail_provider"] = "Custom / Self-Hosted SMTP"
+    except Exception:
+        pass
+
+    # 3. Schema.org JSON-LD & OpenGraph Metadata
+    try:
+        async with httpx.AsyncClient(
+            timeout=8.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        ) as client:
+            resp = await client.get(f"https://{clean_domain}")
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                
+                # Check Schema.org JSON-LD
+                for script in soup.find_all("script", type="application/ld+json"):
+                    try:
+                        content = json.loads(script.string)
+                        if isinstance(content, list):
+                            content = content[0]
+                        if isinstance(content, dict) and content.get("@type") in ["Organization", "Corporation", "LocalBusiness"]:
+                            recon["organization_meta"]["legal_name"] = content.get("name")
+                            recon["organization_meta"]["telephone"] = content.get("telephone")
+                            recon["organization_meta"]["official_email"] = content.get("email")
+                    except Exception:
+                        continue
+                
+                # Extract Verified Social Profile Links
+                socials = set()
+                for a in soup.find_all("a", href=True):
+                    href = a["href"].strip()
+                    if any(s in href.lower() for s in ["linkedin.com/company", "twitter.com/", "facebook.com/", "instagram.com/"]):
+                        socials.add(href)
+                recon["organization_meta"]["social_links"] = sorted(list(socials))[:6]
+    except Exception:
+        pass
+
+    return recon
 
 
 # ---------------------------------------------------------------------------
@@ -486,16 +582,4 @@ async def enrich_and_verify_contact(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import subprocess
-
-    try:
-        subprocess.run(
-            ["git", "pull"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            timeout=15,
-            capture_output=True,
-        )
-    except Exception:
-        pass  # Allow offline execution
-
     mcp.run()
