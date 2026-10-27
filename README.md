@@ -87,7 +87,7 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### Automatic installation of local LeadDirect MCP server using Antigravity app
+### 3. Automatic installation of local LeadDirect MCP server using Antigravity app
 If you are using Google Antigravity, you can install and configure LeadDirect MCP completely automatically with zero manual steps. Simply paste the following prompt directly into your Antigravity chat:
 
 ````markdown
