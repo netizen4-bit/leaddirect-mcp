@@ -4,6 +4,8 @@ A local, agentic Model Context Protocol (MCP) server that generates verified, di
 
 LeadDirect connects your AI assistant (Antigravity, Claude Desktop, Cursor, or local Ollama agents) directly to the web. It autonomously discovers company contacts, uncovers hidden B2B gateways via SSL Certificate Transparency logs, extracts corporate identities through Schema.org microdata, decodes obfuscated emails, and verifies deliverability via zero-bounce SMTP checks.
 
+**Built for Immediate Business ROI:** LeadDirect replaces **$50–$200/month B2B data subscriptions** (such as Apollo, Clay, or Hunter) by executing live OSINT discovery and zero-bounce email verification locally on your machine at zero recurring cost.
+
 ---
 
 ## ⚡ Token Effectiveness & Benchmark
@@ -152,8 +154,12 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 ---
 
-## ☕ Support the Developer
+## ☕ Support & Custom B2B Consulting
 
-If this tool saved you a day, and if you use my other open-source workflow tools, consider supporting the development. Your backing helps keep these small AI tools projects completely free.
+**Support Open-Source Development:**
+If LeadDirect-MCP saves your team from monthly SaaS subscriptions or cuts your LLM token spend, consider backing ongoing development. Your support keeps these local AI and AGENTIC tools free and actively maintained.
 
 [![Patreon](https://img.shields.io/badge/Patreon-Support%20Me-F96854?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/netizen4_bit)
+
+**💼 Need a Custom B2B Scraping or Agentic Pipeline?**
+Need a tailored MCP server, private OSINT enrichment module, or autonomous workflow built specifically for your company? Reach out via [Linkedin](https://www.linkedin.com/in/nihatkasim) for custom integration and consulting.
