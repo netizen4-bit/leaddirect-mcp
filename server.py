@@ -14,6 +14,7 @@ import phonenumbers
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 from fastmcp import FastMCP
+from lead_hunter import extract_social_links, scrape_google_maps_b2b
 
 mcp = FastMCP("LeadDirect")
 
@@ -392,6 +393,7 @@ async def enrich_and_verify_contact(
         "mx_hosts": [],
         "scraped_emails": [],
         "cf_decoded_emails": [],
+        "social_profiles": {"linkedin": [], "instagram": [], "facebook": [], "tiktok": [], "x": []},
         "permuted_candidates": [],
         "verified": [],
         "unverified_permutations": [],
@@ -429,6 +431,7 @@ async def enrich_and_verify_contact(
         result["status"] = "marketplace_extracted"
         result["scraped_emails"] = extracted_data["emails"]
         result["phones"] = extracted_data["phones"]
+        result["social_profiles"] = extract_social_links(page_text)
         return _maybe_append_support(result, count)
         
     else:
@@ -466,6 +469,12 @@ async def enrich_and_verify_contact(
                     sanitized = sanitize_email(e)
                     if sanitized:
                         cf_emails.add(sanitized)
+
+                found_socials = extract_social_links(html)
+                for net, links in found_socials.items():
+                    for link in links:
+                        if link not in result["social_profiles"][net]:
+                            result["social_profiles"][net].append(link)
             except Exception:
                 continue
 
@@ -529,6 +538,7 @@ async def osint_recon_domain(domain: str) -> dict:
         "subdomains": [],
         "mail_provider": "Unknown",
         "mx_hosts": [],
+        "social_profiles": {"linkedin": [], "instagram": [], "facebook": [], "tiktok": [], "x": []},
         "organization_meta": {
             "legal_name": None,
             "telephone": None,
@@ -599,17 +609,64 @@ async def osint_recon_domain(domain: str) -> dict:
                     except Exception:
                         continue
                 
-                # Extract Verified Social Profile Links
-                socials = set()
-                for a in soup.find_all("a", href=True):
-                    href = a["href"].strip()
-                    if any(s in href.lower() for s in ["linkedin.com/company", "twitter.com/", "facebook.com/", "instagram.com/"]):
-                        socials.add(href)
-                recon["organization_meta"]["social_links"] = sorted(list(socials))[:6]
+                # Extract Structured Social Profiles
+                recon["social_profiles"] = extract_social_links(resp.text)
+                recon["organization_meta"]["social_links"] = [
+                    url for urls in recon["social_profiles"].values() for url in urls
+                ][:10]
     except Exception:
         pass
 
     return _maybe_append_support(recon, count)
+
+
+# ---------------------------------------------------------------------------
+# 8. NEW - Google Maps B2B Lead Generator Tool
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def search_google_maps_b2b(query: str, target_leads: int = 10) -> str:
+    """Searches Google Maps for local/regional B2B businesses, dealers, physical warehouses,
+    extracts: company_name, domain, phone, address, and category, and saves to CSV.
+    """
+    count = _increment_counter()
+    leads = await scrape_google_maps_b2b(query, target_leads=target_leads)
+
+    if not leads:
+        msg = "No B2B leads found on Google Maps for this query."
+        if count % 5 == 0:
+            msg += _PATREON_MESSAGE
+        return msg
+
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(["Company", "Domain", "Email", "Phone", "Address", "Category"])
+
+    with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        for lead in leads:
+            writer.writerow([
+                lead.get("company_name", ""),
+                lead.get("domain", "") or "",
+                "Website Form",
+                lead.get("phone", "") or "Not Found",
+                lead.get("address", "") or "Not Found",
+                lead.get("category", "") or "Not Found"
+            ])
+
+    md = "| Company Name | Domain | Phone | Address | Category |\n|---|---|---|---|---|\n"
+    for lead in leads:
+        c_name = lead.get("company_name", "Unknown")
+        domain = lead.get("domain") or "Not Found"
+        phone = lead.get("phone") or "Not Found"
+        addr = lead.get("address") or "Not Found"
+        cat = lead.get("category") or "Not Found"
+        md += f"| {c_name} | {domain} | {phone} | {addr} | {cat} |\n"
+
+    if count % 5 == 0:
+        md += _PATREON_MESSAGE
+
+    return md
 
 
 # ---------------------------------------------------------------------------

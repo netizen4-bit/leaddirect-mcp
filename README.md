@@ -32,12 +32,12 @@ LeadDirect pairs MCP backend tools with structured **Agent Skills** to solve thi
 leaddirect-mcp/
 ├── skills/
 │   ├── b2b-lead-scout/
-│   │   └── SKILL.md             # Query dorking, anti-directory filters & token budgeting
+│   │   └── SKILL.md             # Query dorking, Google Maps channel routing & token budgeting
 │   └── osint-lead-enrichment/
-│       └── SKILL.md             # Subdomain mapping, provider heuristics & validation protocol
+│       └── SKILL.md             # Subdomain mapping, social profile extraction & validation
 ├── output/                      # Auto-created portable directory for CSV leads exports
-├── server.py                    # FastMCP Server exposing core search, verification & OSINT tools
-├── lead_hunter.py               # Deep scraping & headless Playwright engine for raw extraction
+├── server.py                    # FastMCP Server exposing 4 core tools (DDG, Maps, Verify, OSINT)
+├── lead_hunter.py               # 2-Tier hybrid engine (curl_cffi + Playwright) & Google Maps scraper
 ├── agent.py                     # Autonomous agent runner for local LLMs (Ollama / Qwen)
 ├── run_search.py                # Standalone CLI runner with targeted query batches
 ├── requirements.txt             # Core Python dependencies
@@ -48,22 +48,26 @@ leaddirect-mcp/
 
 ## 🛠️ MCP Tools Reference
 
-LeadDirect exposes three native MCP tools:
+LeadDirect exposes four native MCP tools powered by a **2-Tier Hybrid Scraping Waterfall** (`curl_cffi` + `BeautifulSoup4` fast-pass -> `Playwright` dynamic fallback):
 
 ### 1. `find_distributors`
 * **Input:** `query` (str), `target_leads` (int)
-* **What it does:** Searches DuckDuckGo for B2B companies, filters out aggregator directories, extracts emails and phone numbers, saves results directly to `output/leads_output.csv`, and outputs a compact Markdown table.
+* **What it does:** Searches DuckDuckGo for national/global B2B companies, applies anti-directory dorking filters, extracts emails and phone numbers, saves results directly to `output/leads_output.csv`, and outputs a compact Markdown table.
 
-### 2. `enrich_and_verify_contact`
+### 2. `search_google_maps_b2b` *(New)*
+* **Input:** `query` (str), `target_leads` (int)
+* **What it does:** Scrapes Google Maps for local/regional B2B businesses, physical warehouses, and equipment dealers. Extracts company name, website domain, phone number, physical street address, and business category directly to CSV with zero Google Cloud API keys.
+
+### 3. `enrich_and_verify_contact`
 * **Input:** `domain` (str), `first_name` (optional), `last_name` (optional), `website_url` (optional)
-* **What it does:** Scrapes `/contact`, `/about`, and `/team` pages, decodes Cloudflare XOR-protected emails (`data-cfemail`), generates email permutations for the executive, and performs direct zero-bounce SMTP verification. Protects against false-positive catch-all loops.
+* **What it does:** Deep-scrapes company pages using the 2-tier waterfall, extracts **social media profiles** (LinkedIn, Instagram, Facebook, TikTok, X), decodes Cloudflare XOR-protected emails (`data-cfemail`), generates executive email permutations, and performs direct zero-bounce SMTP verification with catch-all bounce defense.
 
-### 3. `osint_recon_domain` *(New)*
+### 4. `osint_recon_domain`
 * **Input:** `domain` (str)
-* **What it does:** Performs zero-cost, API-key-free OSINT intelligence:
-  * **SSL Certificate Transparency (crt.sh):** Enumerates hidden subdomains (`wholesale.domain.com`, `b2b.domain.com`, `dealers.domain.com`, `portal.domain.com`).
+* **What it does:** Performs zero-cost, API-key-free OSINT reconnaissance:
+  * **SSL Certificate Transparency (crt.sh):** Enumerates hidden B2B subdomains (`wholesale.*`, `b2b.*`, `dealers.*`, `portal.*`).
   * **Mail Infrastructure Fingerprinting:** Determines whether the target uses Google Workspace, Microsoft 365, Zoho, or self-hosted SMTP via DNS MX records.
-  * **Schema.org JSON-LD Extraction:** Scrapes corporate metadata including official legal company name, direct telephone, and verified social profiles.
+  * **Schema.org JSON-LD Extraction:** Scrapes structured corporate metadata including legal company name, direct phone, and official social media URLs.
 
 ---
 
