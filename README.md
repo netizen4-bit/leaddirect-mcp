@@ -78,7 +78,7 @@ LeadDirect exposes four native MCP tools powered by a **2-Tier Hybrid Scraping W
 * **Git**
 * An MCP-compatible client (**Antigravity CLI / IDE**, **Claude Desktop**, **Cursor**) or a local **Ollama** setup.
 
-### 2. Installation
+### 2. Manual Installation
 Clone the repository, install Python dependencies, and install the headless browser binary for Playwright:
 ```bash
 git clone https://github.com/netizen4-bit/leaddirect-mcp.git
@@ -86,6 +86,25 @@ cd leaddirect-mcp
 pip install -r requirements.txt
 playwright install chromium
 ```
+
+### Automatic installation of local LeadDirect MCP server using Antigravity app
+If you are using Google Antigravity, you can install and configure LeadDirect MCP completely automatically with zero manual steps. Simply paste the following prompt directly into your Antigravity chat:
+
+````markdown
+Install and configure the LeadDirect MCP server into my Antigravity setup:
+
+1. Clone or pull the repository from https://github.com/netizen4-bit/leaddirect-mcp into a permanent directory at `~/.gemini/antigravity/leaddirect-mcp`.
+2. Automatically install all missing Python dependencies from `requirements.txt` (`pip install -r requirements.txt`) and ensure Playwright Chromium is installed (`playwright install chromium`).
+3. Register the server in Antigravity's global MCP configuration (`~/.gemini/config/mcp_config.json`):
+   - Server name: `leaddirect`
+   - Command: `python`
+   - Args: Full absolute path to `server.py` (ensure Windows backslashes are escaped)
+   - Environment variables: Set `LEADDIRECT_CSV_OUTPUT` to the absolute path of `output/leads_output.csv` inside the repo.
+4. Copy the bundled agent skills (`skills/b2b-lead-scout` and `skills/osint-lead-enrichment`) into `~/.gemini/config/skills/`.
+5. Run a sanity check to verify that `server.py` imports cleanly, and confirm once all 4 MCP tools are registered.
+````
+
+The agent will pull the repo, configure `mcp_config.json`, install all packages and Playwright browser binaries, mount the agent skills, and verify the tools end-to-end.
 
 ---
 
