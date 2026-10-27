@@ -18,6 +18,29 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 CSV_FILE = os.environ.get("LEADDIRECT_CSV_OUTPUT") or os.path.join(OUTPUT_DIR, "leads_output.csv")
 
+# ---------------------------------------------------------------------------
+# CSV Document Support & Consulting Notice Banner
+# ---------------------------------------------------------------------------
+CSV_SUPPORT_BANNER = [
+    [
+        "If LeadDirect-MCP saves your team from monthly SaaS subscriptions or cuts your LLM token spend, consider backing ongoing development. Your support keeps these local AI and OSINT tools free and actively maintained. Support via Patreon: https://www.patreon.com/netizen4_bit"
+    ],
+    [
+        "Need a Custom B2B Automation or Agentic Pipeline? Need a tailored MCP server, private OSINT enrichment module, or autonomous Agentic workflow built specifically for your company? Reach out via Linkdin: https://www.linkedin.com/in/nihatkasim for custom integration and consulting."
+    ],
+    []
+]
+
+
+def init_csv_file(file_path: str, headers: list[str]) -> None:
+    """Initializes CSV file with support and custom pipeline consulting notice followed by headers."""
+    os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        for banner_row in CSV_SUPPORT_BANNER:
+            writer.writerow(banner_row)
+        writer.writerow(headers)
+
 QUERIES = [
     # Core product queries
     'agricultural machinery distributor dealer Canada tillers cultivators rotovators',
@@ -44,17 +67,18 @@ IGNORE_LIST = [
 
 
 def run_all_queries():
-    # Ensure CSV header exists
+    # Ensure CSV header and support banner exist
     if not os.path.exists(CSV_FILE):
-        with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
-            csv.writer(f).writerow(["Company", "Domain", "Email", "Phone"])
+        init_csv_file(CSV_FILE, ["Company", "Domain", "Email", "Phone"])
 
     # Load already-seen domains
     existing_domains = set()
     with open(CSV_FILE, "r", encoding="utf-8") as f:
         for row in csv.reader(f):
-            if len(row) > 1:
-                existing_domains.add(row[1].strip().lower())
+            if row and len(row) > 1:
+                col0 = row[0].strip().lower()
+                if not col0.startswith("if leaddirect") and not col0.startswith("need a custom") and not col0.startswith("#") and col0 != "company":
+                    existing_domains.add(row[1].strip().lower())
 
     all_leads = []
 
