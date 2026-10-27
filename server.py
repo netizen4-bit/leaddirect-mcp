@@ -22,6 +22,35 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 CSV_FILE = os.environ.get("LEADDIRECT_CSV_OUTPUT") or os.path.join(OUTPUT_DIR, "leads_output.csv")
 
+# ---------------------------------------------------------------------------
+# Usage counter & support message
+# ---------------------------------------------------------------------------
+_tool_execution_count = 0
+_PATREON_MESSAGE = (
+    "\n\n---\n"
+    "I hope you enjoy using this tool. Please show your support for my "
+    "further research and development project via patreon: "
+    "[https://www.patreon.com/netizen4_bit](https://www.patreon.com/netizen4_bit)"
+)
+
+
+def _increment_counter():
+    """Increment the global tool execution counter and return the new value."""
+    global _tool_execution_count
+    _tool_execution_count += 1
+    return _tool_execution_count
+
+
+def _maybe_append_support(res: dict, count: int) -> dict:
+    """Appends support reminder every 5 tool executions."""
+    if count % 5 == 0:
+        res["support_message"] = (
+            "I hope you enjoy using this tool. Please show your support for my "
+            "further research and development project via patreon: "
+            "[https://www.patreon.com/netizen4_bit](https://www.patreon.com/netizen4_bit)"
+        )
+    return res
+
 
 def sanitize_email(e: str) -> str:
     """Strips HTML artifacts, brackets, and unicode escape sequences from emails."""
@@ -248,6 +277,7 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
 @mcp.tool()
 def find_distributors(query: str, target_leads: int = 10) -> str:
     """Finds B2B leads using DuckDuckGo, extracts emails/phones, and saves to CSV."""
+    count = _increment_counter()
     if not os.path.exists(CSV_FILE):
         with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(["Company", "Domain", "Email", "Phone"])
@@ -334,6 +364,9 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
     for title, domain, email, phone in found_leads:
         md += f"| {title} | {domain} | {email} | {phone} |\n"
 
+    if count % 5 == 0:
+        md += _PATREON_MESSAGE
+
     return md
 
 
@@ -353,6 +386,7 @@ async def enrich_and_verify_contact(
     SMTP validation to identify active direct emails.
     """
     clean_domain = domain.replace("https://", "").replace("http://", "").strip("/").split("/")[0].lower()
+    count = _increment_counter()
     result: dict = {
         "domain": clean_domain,
         "mx_hosts": [],
@@ -395,14 +429,14 @@ async def enrich_and_verify_contact(
         result["status"] = "marketplace_extracted"
         result["scraped_emails"] = extracted_data["emails"]
         result["phones"] = extracted_data["phones"]
-        return result
+        return _maybe_append_support(result, count)
         
     else:
         mx_hosts = await get_mx_hosts(clean_domain)
         result["mx_hosts"] = mx_hosts
         if not mx_hosts:
             result["status"] = "no_mx_records"
-            return result
+            return _maybe_append_support(result, count)
 
     # Step 2: Scrape website for direct contact emails
     target_url = website_url or f"https://{clean_domain}"
@@ -453,7 +487,7 @@ async def enrich_and_verify_contact(
 
     if not all_candidates:
         result["status"] = "no_email_candidates_found"
-        return result
+        return _maybe_append_support(result, count)
 
     # Step 5: Zero-Bounce SMTP verification
     primary_mx = mx_hosts[0]
@@ -473,7 +507,7 @@ async def enrich_and_verify_contact(
         verified.append({"email": email, "smtp_status": smtp_result})
 
     result["verified"] = verified
-    return result
+    return _maybe_append_support(result, count)
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +522,7 @@ async def osint_recon_domain(domain: str) -> dict:
     - Extracts Schema.org JSON-LD corporate metadata (legal name, official telephone, social links).
     """
     clean_domain = domain.replace("https://", "").replace("http://", "").strip("/").split("/")[0].lower()
+    count = _increment_counter()
     
     recon = {
         "domain": clean_domain,
@@ -574,7 +609,7 @@ async def osint_recon_domain(domain: str) -> dict:
     except Exception:
         pass
 
-    return recon
+    return _maybe_append_support(recon, count)
 
 
 # ---------------------------------------------------------------------------
@@ -582,4 +617,16 @@ async def osint_recon_domain(domain: str) -> dict:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["git", "pull"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=15,
+            capture_output=True,
+        )
+    except Exception:
+        pass  # Allow offline execution
+
     mcp.run()
