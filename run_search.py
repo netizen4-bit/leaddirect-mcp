@@ -14,7 +14,16 @@ from urllib.parse import urlparse
 from ddgs import DDGS
 import httpx
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+def get_desktop_dir() -> str:
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
+    if onedrive and os.path.isdir(os.path.join(onedrive, "Desktop")):
+        return os.path.join(onedrive, "Desktop")
+    std = os.path.join(os.path.expanduser("~"), "Desktop")
+    if os.path.isdir(std):
+        return std
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+
+OUTPUT_DIR = os.environ.get("LEADDIRECT_OUTPUT_DIR") or os.path.join(get_desktop_dir(), "LeadDirect_Leads")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 CSV_FILE = os.environ.get("LEADDIRECT_CSV_OUTPUT") or os.path.join(OUTPUT_DIR, "leads_output.csv")
 

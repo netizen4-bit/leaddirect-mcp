@@ -15,13 +15,30 @@ from bs4 import BeautifulSoup
 from ddgs import DDGS
 from fastmcp import FastMCP
 from lead_hunter import extract_social_links, scrape_google_maps_b2b
+import datetime
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 mcp = FastMCP("LeadDirect")
 
-# Portable output directory handling
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+# Desktop & Portable Output Directory Handling
+def get_desktop_dir() -> str:
+    """Resolves the user's Desktop directory across Windows (including OneDrive), macOS, and Linux."""
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
+    if onedrive and os.path.isdir(os.path.join(onedrive, "Desktop")):
+        return os.path.join(onedrive, "Desktop")
+    std_desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    if os.path.isdir(std_desktop):
+        return std_desktop
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+
+DESKTOP_DIR = get_desktop_dir()
+OUTPUT_DIR = os.environ.get("LEADDIRECT_OUTPUT_DIR") or os.path.join(DESKTOP_DIR, "LeadDirect_Leads")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 CSV_FILE = os.environ.get("LEADDIRECT_CSV_OUTPUT") or os.path.join(OUTPUT_DIR, "leads_output.csv")
+EXCEL_FILE = os.environ.get("LEADDIRECT_EXCEL_OUTPUT") or os.path.join(OUTPUT_DIR, "LeadDirect_B2B_Leads.xlsx")
 
 # ---------------------------------------------------------------------------
 # CSV Document Support & Consulting Notice Banner
@@ -45,6 +62,133 @@ def init_csv_file(file_path: str, headers: list[str]) -> None:
         for banner_row in CSV_SUPPORT_BANNER:
             writer.writerow(banner_row)
         writer.writerow(headers)
+
+
+def get_existing_domains() -> set[str]:
+    """Collects already discovered domains from both CSV and Excel to prevent duplicates."""
+    domains = set()
+    if os.path.exists(CSV_FILE):
+        try:
+            with open(CSV_FILE, "r", encoding="utf-8") as f:
+                for row in csv.reader(f):
+                    if row and len(row) > 1:
+                        col0 = row[0].strip().lower()
+                        if not col0.startswith("if leaddirect") and not col0.startswith("need a custom") and not col0.startswith("#") and col0 != "company" and col0 != "company name":
+                            domains.add(row[1].strip().lower())
+        except Exception:
+            pass
+
+    if os.path.exists(EXCEL_FILE):
+        try:
+            wb = openpyxl.load_workbook(EXCEL_FILE, read_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(min_row=5, min_col=2, max_col=2, values_only=True):
+                if row and row[0]:
+                    domains.add(str(row[0]).strip().lower())
+            wb.close()
+        except Exception:
+            pass
+    return domains
+
+
+def save_leads_to_excel_and_csv(leads: list[dict]) -> tuple[str, str]:
+    """Saves or appends leads to both a formatted Excel (.xlsx) file and a CSV file in OUTPUT_DIR."""
+    headers = ["Company Name", "Domain", "Email", "Phone", "Address", "Category", "Date Added"]
+    today_str = str(datetime.date.today())
+
+    # --- 1. Save to Excel ---
+    try:
+        if os.path.exists(EXCEL_FILE):
+            wb = openpyxl.load_workbook(EXCEL_FILE)
+            ws = wb.active
+        else:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "B2B Leads"
+
+        if ws.max_row < 4:
+            # Row 1: Title Banner
+            ws.merge_cells("A1:G1")
+            t_cell = ws["A1"]
+            t_cell.value = "LeadDirect-MCP | Autonomous B2B Leads Engine"
+            t_cell.font = Font(name="Segoe UI", size=12, bold=True, color="FFFFFF")
+            t_cell.fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+            t_cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 25
+
+            # Row 2: Support Notice Banner
+            ws.merge_cells("A2:G2")
+            b_cell = ws["A2"]
+            b_cell.value = "Support research via Patreon: https://www.patreon.com/netizen4_bit  |  Custom B2B Integrations & Consulting: https://www.linkedin.com/in/nihatkasim"
+            b_cell.font = Font(name="Segoe UI", size=9, italic=True, color="1D4ED8")
+            b_cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+            b_cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[2].height = 20
+
+            # Row 3: Spacer
+            ws.row_dimensions[3].height = 8
+
+            # Row 4: Table Headers
+            for col_idx, h in enumerate(headers, 1):
+                cell = ws.cell(row=4, column=col_idx, value=h)
+                cell.font = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[4].height = 22
+
+        start_row = max(ws.max_row + 1, 5)
+        for idx, lead in enumerate(leads):
+            c_row = start_row + idx
+            row_vals = [
+                lead.get("company") or lead.get("company_name", "Unknown"),
+                lead.get("domain", "") or "",
+                lead.get("email", "Website Form") or "Website Form",
+                lead.get("phone", "Not Found") or "Not Found",
+                lead.get("address", "N/A") or "N/A",
+                lead.get("category", "Distributor / Wholesaler") or "Distributor / Wholesaler",
+                today_str,
+            ]
+            for col_idx, val in enumerate(row_vals, 1):
+                c = ws.cell(row=c_row, column=col_idx, value=val)
+                c.font = Font(name="Segoe UI", size=10)
+                c.alignment = Alignment(vertical="center")
+            ws.row_dimensions[c_row].height = 20
+
+        # Auto-fit column widths
+        for col in ws.columns:
+            col_letter = get_column_letter(col[0].column)
+            max_l = max(len(str(cell.value or "")) for cell in col if cell.row >= 4)
+            ws.column_dimensions[col_letter].width = max(max_l + 4, 15)
+
+        ws.freeze_panes = "A5"
+        if ws.max_row >= 5:
+            ws.auto_filter.ref = f"A4:G{ws.max_row}"
+
+        wb.save(EXCEL_FILE)
+    except Exception as e:
+        print(f"Warning: Failed to update Excel file: {e}")
+
+    # --- 2. Save to CSV ---
+    try:
+        file_is_new = not os.path.exists(CSV_FILE)
+        if file_is_new:
+            init_csv_file(CSV_FILE, headers)
+        with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for lead in leads:
+                writer.writerow([
+                    lead.get("company") or lead.get("company_name", "Unknown"),
+                    lead.get("domain", "") or "",
+                    lead.get("email", "Website Form") or "Website Form",
+                    lead.get("phone", "Not Found") or "Not Found",
+                    lead.get("address", "N/A") or "N/A",
+                    lead.get("category", "Distributor / Wholesaler") or "Distributor / Wholesaler",
+                    today_str,
+                ])
+    except Exception as e:
+        print(f"Warning: Failed to update CSV file: {e}")
+
+    return EXCEL_FILE, CSV_FILE
 
 # ---------------------------------------------------------------------------
 # Usage counter & support message
@@ -300,19 +444,9 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
 
 @mcp.tool()
 def find_distributors(query: str, target_leads: int = 10) -> str:
-    """Finds B2B leads using DuckDuckGo, extracts emails/phones, and saves to CSV."""
+    """Finds B2B leads using DuckDuckGo, extracts emails/phones, and saves to Excel and CSV on Desktop."""
     count = _increment_counter()
-    if not os.path.exists(CSV_FILE):
-        init_csv_file(CSV_FILE, ["Company", "Domain", "Email", "Phone"])
-
-    existing_domains = set()
-    if os.path.exists(CSV_FILE):
-        with open(CSV_FILE, "r", encoding="utf-8") as f:
-            for row in csv.reader(f):
-                if row and len(row) > 1:
-                    col0 = row[0].strip().lower()
-                    if not col0.startswith("if leaddirect") and not col0.startswith("need a custom") and not col0.startswith("#") and col0 != "company":
-                        existing_domains.add(row[1].strip().lower())
+    existing_domains = get_existing_domains()
 
     try:
         results = list(DDGS().text(query, max_results=60))
@@ -380,14 +514,29 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
     if not found_leads:
         return "No new leads found."
 
-    with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        for lead in found_leads:
-            writer.writerow(lead)
+    leads_to_save = [
+        {
+            "company": title,
+            "domain": domain,
+            "email": email,
+            "phone": phone,
+            "address": "N/A",
+            "category": "Distributor / Wholesaler",
+        }
+        for title, domain, email, phone in found_leads
+    ]
+    excel_path, csv_path = save_leads_to_excel_and_csv(leads_to_save)
 
     md = "| Company | Domain | Email | Phone |\n|---|---|---|---|\n"
     for title, domain, email, phone in found_leads:
         md += f"| {title} | {domain} | {email} | {phone} |\n"
+
+    md += (
+        f"\n\n---\n"
+        f"📁 **Results saved to Desktop folder:** `{OUTPUT_DIR}`\n"
+        f"* 📊 **Excel Spreadsheet:** `{excel_path}`\n"
+        f"* 📄 **CSV Export:** `{csv_path}`"
+    )
 
     if count % 5 == 0:
         md += _PATREON_MESSAGE
@@ -662,20 +811,18 @@ async def search_google_maps_b2b(query: str, target_leads: int = 10) -> str:
             msg += _PATREON_MESSAGE
         return msg
 
-    if not os.path.exists(CSV_FILE):
-        init_csv_file(CSV_FILE, ["Company", "Domain", "Email", "Phone", "Address", "Category"])
-
-    with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        for lead in leads:
-            writer.writerow([
-                lead.get("company_name", ""),
-                lead.get("domain", "") or "",
-                "Website Form",
-                lead.get("phone", "") or "Not Found",
-                lead.get("address", "") or "Not Found",
-                lead.get("category", "") or "Not Found"
-            ])
+    leads_to_save = [
+        {
+            "company": lead.get("company_name", ""),
+            "domain": lead.get("domain", "") or "",
+            "email": "Website Form",
+            "phone": lead.get("phone", "") or "Not Found",
+            "address": lead.get("address", "") or "Not Found",
+            "category": lead.get("category", "") or "Not Found",
+        }
+        for lead in leads
+    ]
+    excel_path, csv_path = save_leads_to_excel_and_csv(leads_to_save)
 
     md = "| Company Name | Domain | Phone | Address | Category |\n|---|---|---|---|---|\n"
     for lead in leads:
@@ -685,6 +832,13 @@ async def search_google_maps_b2b(query: str, target_leads: int = 10) -> str:
         addr = lead.get("address") or "Not Found"
         cat = lead.get("category") or "Not Found"
         md += f"| {c_name} | {domain} | {phone} | {addr} | {cat} |\n"
+
+    md += (
+        f"\n\n---\n"
+        f"📁 **Results saved to Desktop folder:** `{OUTPUT_DIR}`\n"
+        f"* 📊 **Excel Spreadsheet:** `{excel_path}`\n"
+        f"* 📄 **CSV Export:** `{csv_path}`"
+    )
 
     if count % 5 == 0:
         md += _PATREON_MESSAGE

@@ -31,7 +31,17 @@ from lead_hunter import scrape_company_data, normalize_with_llm
 # ---------------------------------------------------------------------------
 OLLAMA_HOST = "http://localhost:11434"
 MODEL_NAME = "my-custom-qwen"
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+def get_desktop_dir() -> str:
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
+    if onedrive and os.path.isdir(os.path.join(onedrive, "Desktop")):
+        return os.path.join(onedrive, "Desktop")
+    std = os.path.join(os.path.expanduser("~"), "Desktop")
+    if os.path.isdir(std):
+        return std
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+
+OUTPUT_DIR = os.environ.get("LEADDIRECT_OUTPUT_DIR") or os.path.join(get_desktop_dir(), "LeadDirect_Leads")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 ollama_client = AsyncClient(host=OLLAMA_HOST)
 
@@ -83,6 +93,8 @@ def save_leads_to_csv(filename: str, leads_json: str) -> str:
 
     fieldnames = list(leads[0].keys())
     with open(filepath, mode="w", newline="", encoding="utf-8") as f:
+        f.write("# If LeadDirect-MCP saves your team from monthly SaaS subscriptions, support us: https://www.patreon.com/netizen4_bit\n")
+        f.write("# Need a Custom B2B Automation or Agentic Pipeline? Contact: https://www.linkedin.com/in/nihatkasim\n\n")
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(leads)
