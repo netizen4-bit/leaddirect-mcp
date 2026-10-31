@@ -5,24 +5,73 @@ import csv
 import uuid
 import json
 import asyncio
+import inspect
 import unicodedata
 from urllib.parse import urlparse
 import httpx
 import dns.resolver
 import dns.asyncresolver
-import phonenumbers
+try:
+    import phonenumbers
+    HAS_PHONENUMBERS = True
+except ImportError:
+    HAS_PHONENUMBERS = False
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 from fastmcp import FastMCP
-from lead_hunter import extract_social_links, scrape_google_maps_b2b
+from fastmcp.server.middleware import Middleware
 import datetime
+
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from lead_hunter import (
+    extract_social_links,
+    extract_whatsapp,
+    extract_phone_numbers,
+    is_valid_phone,
+    normalize_social_url,
+    search_social_fallback,
+    clean_domain,
+    scrape_google_maps_b2b,
+    save_leads_to_excel_and_csv as hunter_save_leads,
+    upsert_lead_to_excel_and_csv as hunter_upsert_lead,
+    EXPORT_HEADERS,
+)
+
 mcp = FastMCP("LeadDirect")
 
+# ---------------------------------------------------------------------------
+# Resilience Middleware: Tolerate Unexpected Kwargs from Small Local LLMs
+# ---------------------------------------------------------------------------
+class ExtraArgsFilterMiddleware(Middleware):
+    """Intercepts tool calls and filters out unexpected keyword arguments
+    so small local LLMs never trigger Pydantic 'Unexpected keyword argument' validation crashes.
+    """
+    def __init__(self, server: FastMCP):
+        self.server = server
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            tool_name = context.message.name
+            tool = await self.server.get_tool(tool_name)
+            if tool and hasattr(tool, 'fn'):
+                sig = inspect.signature(tool.fn)
+                allowed_params = set(sig.parameters.keys())
+                if context.message.arguments:
+                    filtered = {k: v for k, v in context.message.arguments.items() if k in allowed_params}
+                    context.message.arguments = filtered
+        except Exception:
+            pass
+        return await call_next(context)
+
+mcp.add_middleware(ExtraArgsFilterMiddleware(mcp))
+
+
+# ---------------------------------------------------------------------------
 # Desktop & Portable Output Directory Handling
+# ---------------------------------------------------------------------------
 def get_desktop_dir() -> str:
     """Resolves the user's Desktop directory across Windows (including OneDrive), macOS, and Linux."""
     onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
@@ -39,6 +88,13 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 CSV_FILE = os.environ.get("LEADDIRECT_CSV_OUTPUT") or os.path.join(OUTPUT_DIR, "leads_output.csv")
 EXCEL_FILE = os.environ.get("LEADDIRECT_EXCEL_OUTPUT") or os.path.join(OUTPUT_DIR, "LeadDirect_B2B_Leads.xlsx")
+
+# 12-Column Schema Definition
+HEADERS = [
+    "Company Name", "Domain", "Email", "Phone", "WhatsApp",
+    "Facebook", "Instagram", "LinkedIn", "TikTok", "Address",
+    "Category", "Date Added"
+]
 
 # ---------------------------------------------------------------------------
 # CSV Document Support & Consulting Notice Banner
@@ -74,7 +130,9 @@ def get_existing_domains() -> set[str]:
                     if row and len(row) > 1:
                         col0 = row[0].strip().lower()
                         if not col0.startswith("if leaddirect") and not col0.startswith("need a custom") and not col0.startswith("#") and col0 != "company" and col0 != "company name":
-                            domains.add(row[1].strip().lower())
+                            d = clean_domain(row[1])
+                            if d:
+                                domains.add(d)
         except Exception:
             pass
 
@@ -84,7 +142,9 @@ def get_existing_domains() -> set[str]:
             ws = wb.active
             for row in ws.iter_rows(min_row=5, min_col=2, max_col=2, values_only=True):
                 if row and row[0]:
-                    domains.add(str(row[0]).strip().lower())
+                    d = clean_domain(str(row[0]))
+                    if d:
+                        domains.add(d)
             wb.close()
         except Exception:
             pass
@@ -92,103 +152,14 @@ def get_existing_domains() -> set[str]:
 
 
 def save_leads_to_excel_and_csv(leads: list[dict]) -> tuple[str, str]:
-    """Saves or appends leads to both a formatted Excel (.xlsx) file and a CSV file in OUTPUT_DIR."""
-    headers = ["Company Name", "Domain", "Email", "Phone", "Address", "Category", "Date Added"]
-    today_str = str(datetime.date.today())
+    """Saves or appends leads to both a formatted Excel (.xlsx) file and a CSV file in OUTPUT_DIR using the 12-column schema."""
+    return hunter_upsert_lead(leads, excel_path=EXCEL_FILE, csv_path=CSV_FILE)
 
-    # --- 1. Save to Excel ---
-    try:
-        if os.path.exists(EXCEL_FILE):
-            wb = openpyxl.load_workbook(EXCEL_FILE)
-            ws = wb.active
-        else:
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "B2B Leads"
 
-        if ws.max_row < 4:
-            # Row 1: Title Banner
-            ws.merge_cells("A1:G1")
-            t_cell = ws["A1"]
-            t_cell.value = "LeadDirect-MCP | Autonomous B2B Leads Engine"
-            t_cell.font = Font(name="Segoe UI", size=12, bold=True, color="FFFFFF")
-            t_cell.fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
-            t_cell.alignment = Alignment(horizontal="center", vertical="center")
-            ws.row_dimensions[1].height = 25
+def upsert_lead_to_excel_and_csv(lead_data: dict) -> tuple[str, str]:
+    """Upserts or merges lead fields into matching Domain row in Excel and CSV."""
+    return hunter_upsert_lead(lead_data, excel_path=EXCEL_FILE, csv_path=CSV_FILE)
 
-            # Row 2: Support Notice Banner
-            ws.merge_cells("A2:G2")
-            b_cell = ws["A2"]
-            b_cell.value = "Support research via Patreon: https://www.patreon.com/netizen4_bit  |  Custom B2B Integrations & Consulting: https://www.linkedin.com/in/nihatkasim"
-            b_cell.font = Font(name="Segoe UI", size=9, italic=True, color="1D4ED8")
-            b_cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
-            b_cell.alignment = Alignment(horizontal="center", vertical="center")
-            ws.row_dimensions[2].height = 20
-
-            # Row 3: Spacer
-            ws.row_dimensions[3].height = 8
-
-            # Row 4: Table Headers
-            for col_idx, h in enumerate(headers, 1):
-                cell = ws.cell(row=4, column=col_idx, value=h)
-                cell.font = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")
-                cell.fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-            ws.row_dimensions[4].height = 22
-
-        start_row = max(ws.max_row + 1, 5)
-        for idx, lead in enumerate(leads):
-            c_row = start_row + idx
-            row_vals = [
-                lead.get("company") or lead.get("company_name", "Unknown"),
-                lead.get("domain", "") or "",
-                lead.get("email", "Website Form") or "Website Form",
-                lead.get("phone", "Not Found") or "Not Found",
-                lead.get("address", "N/A") or "N/A",
-                lead.get("category", "Distributor / Wholesaler") or "Distributor / Wholesaler",
-                today_str,
-            ]
-            for col_idx, val in enumerate(row_vals, 1):
-                c = ws.cell(row=c_row, column=col_idx, value=val)
-                c.font = Font(name="Segoe UI", size=10)
-                c.alignment = Alignment(vertical="center")
-            ws.row_dimensions[c_row].height = 20
-
-        # Auto-fit column widths
-        for col in ws.columns:
-            col_letter = get_column_letter(col[0].column)
-            max_l = max(len(str(cell.value or "")) for cell in col if cell.row >= 4)
-            ws.column_dimensions[col_letter].width = max(max_l + 4, 15)
-
-        ws.freeze_panes = "A5"
-        if ws.max_row >= 5:
-            ws.auto_filter.ref = f"A4:G{ws.max_row}"
-
-        wb.save(EXCEL_FILE)
-    except Exception as e:
-        print(f"Warning: Failed to update Excel file: {e}")
-
-    # --- 2. Save to CSV ---
-    try:
-        file_is_new = not os.path.exists(CSV_FILE)
-        if file_is_new:
-            init_csv_file(CSV_FILE, headers)
-        with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            for lead in leads:
-                writer.writerow([
-                    lead.get("company") or lead.get("company_name", "Unknown"),
-                    lead.get("domain", "") or "",
-                    lead.get("email", "Website Form") or "Website Form",
-                    lead.get("phone", "Not Found") or "Not Found",
-                    lead.get("address", "N/A") or "N/A",
-                    lead.get("category", "Distributor / Wholesaler") or "Distributor / Wholesaler",
-                    today_str,
-                ])
-    except Exception as e:
-        print(f"Warning: Failed to update CSV file: {e}")
-
-    return EXCEL_FILE, CSV_FILE
 
 # ---------------------------------------------------------------------------
 # Usage counter & support message
@@ -238,17 +209,19 @@ def extract_marketplace_contacts(text: str, dynamic_region: str = None) -> dict:
         if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'))
     ]
     valid_emails = [e for e in valid_emails if e and "@" in e]
-    
+
     phones = []
-    try:
-        for match in phonenumbers.PhoneNumberMatcher(text, dynamic_region):
-            formatted_num = phonenumbers.format_number(
-                match.number, phonenumbers.PhoneNumberFormat.INTERNATIONAL
-            )
-            phones.append(formatted_num)
-    except Exception:
-        pass
-        
+    if HAS_PHONENUMBERS:
+        try:
+            for match in phonenumbers.PhoneNumberMatcher(text, dynamic_region):
+                formatted_num = phonenumbers.format_number(
+                    match.number, phonenumbers.PhoneNumberFormat.INTERNATIONAL
+                )
+                if is_valid_phone(formatted_num):
+                    phones.append(formatted_num)
+        except Exception:
+            pass
+
     return {
         "emails": sorted(list(set(valid_emails))),
         "phones": sorted(list(set(phones)))
@@ -260,10 +233,7 @@ def extract_marketplace_contacts(text: str, dynamic_region: str = None) -> dict:
 # ---------------------------------------------------------------------------
 
 def decode_cf_email(encoded_string: str) -> str:
-    """Decode a Cloudflare-obfuscated email.
-    The first two hex characters are the XOR key; every subsequent pair of hex
-    characters is XOR'd against the key to reveal the original character.
-    """
+    """Decode a Cloudflare-obfuscated email."""
     key = int(encoded_string[:2], 16)
     decoded = []
     for i in range(2, len(encoded_string), 2):
@@ -277,7 +247,6 @@ def extract_cf_emails(html: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     emails: list[str] = []
 
-    # Method 1: data-cfemail attribute on any tag
     for tag in soup.find_all(attrs={"data-cfemail": True}):
         try:
             email = sanitize_email(decode_cf_email(tag["data-cfemail"]))
@@ -286,7 +255,6 @@ def extract_cf_emails(html: str) -> list[str]:
         except (ValueError, IndexError):
             pass
 
-    # Method 2: /cdn-cgi/l/email-protection#<hex> links
     for a_tag in soup.find_all("a", href=True):
         href: str = a_tag["href"]
         if "/cdn-cgi/l/email-protection#" in href:
@@ -321,15 +289,15 @@ def generate_email_permutations(
     if not first or not last:
         return []
 
-    f = first[0]  # first initial
+    f = first[0]
 
     patterns = [
-        f"{first}.{last}",   # jane.doe
-        f"{f}.{last}",       # j.doe
-        f"{first}",          # jane
-        f"{last}.{first}",   # doe.jane
-        f"{f}{last}",        # jdoe
-        f"{first}{last}",    # janedoe
+        f"{first}.{last}",
+        f"{f}.{last}",
+        f"{first}",
+        f"{last}.{first}",
+        f"{f}{last}",
+        f"{first}{last}",
     ]
     return [f"{p}@{domain}" for p in patterns]
 
@@ -339,7 +307,7 @@ def generate_email_permutations(
 # ---------------------------------------------------------------------------
 
 async def get_mx_hosts(domain: str) -> list[str]:
-    """Resolve MX records for *domain*, returning hostnames sorted by priority."""
+    """Resolve MX records for domain, returning hostnames sorted by priority."""
     try:
         answers = await dns.asyncresolver.resolve(domain, "MX")
         records = sorted(answers, key=lambda r: r.preference)
@@ -374,14 +342,7 @@ async def _smtp_exchange(
 
 
 async def verify_email_smtp(email: str, mx_host: str) -> str:
-    """Perform a zero-bounce SMTP verification against *mx_host*.
-    Returns one of:
-        "VALID"       -> 250 on RCPT TO
-        "INVALID"     -> 550/551/553 on RCPT TO
-        "CATCH_ALL"   -> server accepts a random UUID probe
-        "GREYLISTED"  -> 4xx temporary response
-        "ERROR"       -> connection or protocol failure
-    """
+    """Perform a zero-bounce SMTP verification against mx_host."""
     domain = email.split("@", 1)[-1]
     try:
         reader, writer = await asyncio.wait_for(
@@ -391,20 +352,16 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
         return "ERROR"
 
     try:
-        # Read banner
         await asyncio.wait_for(reader.read(4096), timeout=5.0)
 
-        # EHLO
         code, _ = await _smtp_exchange(reader, writer, "EHLO mail.validation-check.local")
         if code not in (220, 250):
             return "ERROR"
 
-        # MAIL FROM
         code, _ = await _smtp_exchange(reader, writer, "MAIL FROM:<check@validation-check.local>")
         if code != 250:
             return "ERROR"
 
-        # Catch-all probe: random UUID address
         random_addr = f"test-{uuid.uuid4().hex[:12]}@{domain}"
         code_catchall, _ = await _smtp_exchange(
             reader, writer, f"RCPT TO:<{random_addr}>"
@@ -412,11 +369,9 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
         if code_catchall == 250:
             return "CATCH_ALL"
 
-        # Reset for real check
         await _smtp_exchange(reader, writer, "RSET")
         await _smtp_exchange(reader, writer, "MAIL FROM:<check@validation-check.local>")
 
-        # RCPT TO with real candidate
         code, _ = await _smtp_exchange(reader, writer, f"RCPT TO:<{email}>")
         if code == 250:
             return "VALID"
@@ -444,7 +399,9 @@ async def verify_email_smtp(email: str, mx_host: str) -> str:
 
 @mcp.tool()
 def find_distributors(query: str, target_leads: int = 10) -> str:
-    """Finds B2B leads using DuckDuckGo, extracts emails/phones, and saves to Excel and CSV on Desktop."""
+    """Finds B2B leads using DuckDuckGo, extracts emails, hardened phones, WhatsApp,
+    and social media links, and saves/merges to Excel and CSV on Desktop.
+    """
     count = _increment_counter()
     existing_domains = get_existing_domains()
 
@@ -471,7 +428,7 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
             title = r.get("title", "Unknown")
 
             try:
-                domain = urlparse(url).netloc.replace("www.", "").strip().lower()
+                domain = clean_domain(url)
             except Exception:
                 continue
 
@@ -483,29 +440,82 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
 
             email = "Website Form"
             phone = "Not Found"
+            whatsapp = ""
+            fb_url = ""
+            ig_url = ""
+            li_url = ""
+            tt_url = ""
 
             try:
                 response = client.get(f"https://{domain}")
-                text = response.text
+                html = response.text
 
+                # 1. Email extraction
                 emails = re.findall(
-                    r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text
+                    r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", html
                 )
                 valid_emails = [
                     sanitize_email(e) for e in emails
                     if not e.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp"))
                 ]
                 valid_emails = [e for e in valid_emails if e and "@" in e]
+                cf_e = extract_cf_emails(html)
+                for ce in cf_e:
+                    if ce and "@" in ce:
+                        valid_emails.append(ce)
                 if valid_emails:
                     email = valid_emails[0]
 
-                phones = re.findall(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
-                if phones:
-                    phone = phones[0]
+                # 2. Hardened Phone Extraction (rejects timestamps)
+                found_phones = extract_phone_numbers(html)
+                if found_phones:
+                    phone = found_phones[0]
+
+                # 3. WhatsApp Extraction
+                wa = extract_whatsapp(html)
+                if wa:
+                    whatsapp = wa
+
+                # 4. Social Links Extraction
+                socials = extract_social_links(html)
+                if socials.get("facebook"):
+                    fb_url = socials["facebook"][0]
+                if socials.get("instagram"):
+                    ig_url = socials["instagram"][0]
+                if socials.get("linkedin"):
+                    li_url = socials["linkedin"][0]
+                if socials.get("tiktok"):
+                    tt_url = socials["tiktok"][0]
+                if not whatsapp and socials.get("whatsapp"):
+                    whatsapp = socials["whatsapp"][0]
+
+                # 5. Social Search Fallback if missing
+                if not fb_url and not ig_url and not li_url and not whatsapp:
+                    fallback = search_social_fallback(title, domain)
+                    fb_url = fallback.get("facebook", "")
+                    ig_url = fallback.get("instagram", "")
+                    li_url = fallback.get("linkedin", "")
+                    tt_url = fallback.get("tiktok", "")
+                    if not whatsapp:
+                        whatsapp = fallback.get("whatsapp", "")
+
             except Exception:
                 pass
 
-            found_leads.append((title, domain, email, phone))
+            found_leads.append({
+                "company": title,
+                "domain": domain,
+                "email": email,
+                "phone": phone,
+                "whatsapp": whatsapp,
+                "facebook": fb_url,
+                "instagram": ig_url,
+                "linkedin": li_url,
+                "tiktok": tt_url,
+                "address": "N/A",
+                "category": "Distributor / Wholesaler",
+                "date_added": str(datetime.date.today())
+            })
             existing_domains.add(domain)
 
             if len(found_leads) >= target_leads:
@@ -514,28 +524,23 @@ def find_distributors(query: str, target_leads: int = 10) -> str:
     if not found_leads:
         return "No new leads found."
 
-    leads_to_save = [
-        {
-            "company": title,
-            "domain": domain,
-            "email": email,
-            "phone": phone,
-            "address": "N/A",
-            "category": "Distributor / Wholesaler",
-        }
-        for title, domain, email, phone in found_leads
-    ]
-    excel_path, csv_path = save_leads_to_excel_and_csv(leads_to_save)
+    excel_path, csv_path = save_leads_to_excel_and_csv(found_leads)
 
-    md = "| Company | Domain | Email | Phone |\n|---|---|---|---|\n"
-    for title, domain, email, phone in found_leads:
-        md += f"| {title} | {domain} | {email} | {phone} |\n"
+    md = "| Company | Domain | Email | Phone | WhatsApp | LinkedIn |\n|---|---|---|---|---|---|\n"
+    for l in found_leads:
+        title = l["company"]
+        d = l["domain"]
+        em = l["email"]
+        ph = l["phone"]
+        wa = l["whatsapp"] or "—"
+        li = l["linkedin"] or "—"
+        md += f"| {title} | {d} | {em} | {ph} | {wa} | {li} |\n"
 
     md += (
         f"\n\n---\n"
         f"📁 **Results saved to Desktop folder:** `{OUTPUT_DIR}`\n"
-        f"* 📊 **Excel Spreadsheet:** `{excel_path}`\n"
-        f"* 📄 **CSV Export:** `{csv_path}`"
+        f"* 📊 **Excel Spreadsheet (12 Columns):** `{excel_path}`\n"
+        f"* 📄 **CSV Export (12 Columns):** `{csv_path}`"
     )
 
     if count % 5 == 0:
@@ -556,21 +561,25 @@ async def enrich_and_verify_contact(
     website_url: str | None = None,
 ) -> dict:
     """Enriches a target B2B lead by checking the domain website for obfuscated emails,
-    generating pattern permutations for the given executive, and performing zero-bounce
-    SMTP validation to identify active direct emails.
+    extracting WhatsApp, phones, and social links, generating executive email permutations,
+    performing zero-bounce SMTP validation, and auto-updating/merging LeadDirect_B2B_Leads.xlsx.
     """
-    clean_domain = domain.replace("https://", "").replace("http://", "").strip("/").split("/")[0].lower()
+    clean_d = clean_domain(domain)
     count = _increment_counter()
     result: dict = {
-        "domain": clean_domain,
+        "domain": clean_d,
         "mx_hosts": [],
         "scraped_emails": [],
         "cf_decoded_emails": [],
+        "phones": [],
+        "whatsapp": "",
         "social_profiles": {"linkedin": [], "instagram": [], "facebook": [], "tiktok": [], "x": []},
         "permuted_candidates": [],
         "verified": [],
         "unverified_permutations": [],
         "catch_all_domain": False,
+        "excel_updated": EXCEL_FILE,
+        "csv_updated": CSV_FILE,
         "status": "ok",
     }
 
@@ -579,13 +588,13 @@ async def enrich_and_verify_contact(
         "facebook.com", "instagram.com", "truckscout24.", "machineryzone.",
         "agriaffaires.", "europages.", "autoline."
     ]
-    
-    is_marketplace = any(market in clean_domain for market in global_marketplaces)
-    
+
+    is_marketplace = any(market in clean_d for market in global_marketplaces)
+
     if is_marketplace:
-        target_url = website_url or f"https://{clean_domain}"
+        target_url = website_url or f"https://{clean_d}"
         page_text = ""
-        
+
         try:
             async with httpx.AsyncClient(
                 timeout=10.0,
@@ -597,35 +606,51 @@ async def enrich_and_verify_contact(
         except Exception:
             page_text = ""
 
-        tld = clean_domain.split('.')[-1].upper()
+        tld = clean_d.split('.')[-1].upper()
         region_hint = tld if len(tld) == 2 else None
 
         extracted_data = extract_marketplace_contacts(page_text, dynamic_region=region_hint)
         result["status"] = "marketplace_extracted"
         result["scraped_emails"] = extracted_data["emails"]
         result["phones"] = extracted_data["phones"]
+        result["whatsapp"] = extract_whatsapp(page_text)
         result["social_profiles"] = extract_social_links(page_text)
+
+        # Auto-update / Upsert to Excel & CSV
+        upsert_data = {
+            "domain": clean_d,
+            "email": extracted_data["emails"][0] if extracted_data["emails"] else "",
+            "phone": extracted_data["phones"][0] if extracted_data["phones"] else "",
+            "whatsapp": result["whatsapp"],
+            "facebook": result["social_profiles"].get("facebook", [""])[0] if result["social_profiles"].get("facebook") else "",
+            "instagram": result["social_profiles"].get("instagram", [""])[0] if result["social_profiles"].get("instagram") else "",
+            "linkedin": result["social_profiles"].get("linkedin", [""])[0] if result["social_profiles"].get("linkedin") else "",
+            "tiktok": result["social_profiles"].get("tiktok", [""])[0] if result["social_profiles"].get("tiktok") else "",
+        }
+        upsert_lead_to_excel_and_csv(upsert_data)
         return _maybe_append_support(result, count)
-        
+
     else:
-        mx_hosts = await get_mx_hosts(clean_domain)
+        mx_hosts = await get_mx_hosts(clean_d)
         result["mx_hosts"] = mx_hosts
         if not mx_hosts:
             result["status"] = "no_mx_records"
             return _maybe_append_support(result, count)
 
-    # Step 2: Scrape website for direct contact emails
-    target_url = website_url or f"https://{clean_domain}"
+    # Step 2: Scrape website for direct contact emails, phones, whatsapp, socials
+    target_url = website_url or f"https://{clean_d}"
     scraped_emails: set[str] = set()
     cf_emails: set[str] = set()
+    scraped_phones: list[str] = []
+    whatsapp_val = ""
 
     async with httpx.AsyncClient(
         timeout=8.0,
         follow_redirects=True,
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
     ) as client:
-        for path in ("", "/contact", "/about", "/team"):
-            url = f"https://{clean_domain}{path}" if path else target_url
+        for path in ("", "/contact", "/contact-us", "/about", "/about-us", "/team"):
+            url = f"https://{clean_d}{path}" if path else target_url
             try:
                 resp = await client.get(url)
                 html = resp.text
@@ -643,6 +668,17 @@ async def enrich_and_verify_contact(
                     if sanitized:
                         cf_emails.add(sanitized)
 
+                # Extract hardened phones
+                for p in extract_phone_numbers(html):
+                    if p not in scraped_phones:
+                        scraped_phones.append(p)
+
+                # Extract WhatsApp
+                if not whatsapp_val:
+                    wa = extract_whatsapp(html)
+                    if wa:
+                        whatsapp_val = wa
+
                 found_socials = extract_social_links(html)
                 for net, links in found_socials.items():
                     for link in links:
@@ -653,11 +689,13 @@ async def enrich_and_verify_contact(
 
     result["scraped_emails"] = sorted(scraped_emails)
     result["cf_decoded_emails"] = sorted(cf_emails)
+    result["phones"] = scraped_phones
+    result["whatsapp"] = whatsapp_val
 
     # Step 3: Generate permutations
     candidates: list[str] = []
     if first_name and last_name:
-        candidates = generate_email_permutations(first_name, last_name, clean_domain)
+        candidates = generate_email_permutations(first_name, last_name, clean_d)
         result["permuted_candidates"] = candidates
 
     # Step 4: Combine all candidate emails
@@ -667,33 +705,55 @@ async def enrich_and_verify_contact(
         )
     )
 
-    if not all_candidates:
-        result["status"] = "no_email_candidates_found"
-        return _maybe_append_support(result, count)
+    best_verified_email = ""
 
-    # Step 5: Zero-Bounce SMTP verification
-    primary_mx = mx_hosts[0]
-    verified: list[dict] = []
+    if all_candidates and mx_hosts:
+        primary_mx = mx_hosts[0]
+        verified: list[dict] = []
 
-    for email in all_candidates:
-        smtp_result = await verify_email_smtp(email, primary_mx)
+        for email in all_candidates:
+            smtp_result = await verify_email_smtp(email, primary_mx)
 
-        if smtp_result == "CATCH_ALL":
-            result["catch_all_domain"] = True
-            result["status"] = "catch_all_domain"
-            result["unverified_permutations"] = all_candidates
-            for sc in scraped_emails:
-                verified.append({"email": sc, "smtp_status": "SCRAPED_VERIFIED_CATCHALL"})
-            break
+            if smtp_result == "CATCH_ALL":
+                result["catch_all_domain"] = True
+                result["status"] = "catch_all_domain"
+                result["unverified_permutations"] = all_candidates
+                for sc in scraped_emails:
+                    verified.append({"email": sc, "smtp_status": "SCRAPED_VERIFIED_CATCHALL"})
+                    if not best_verified_email:
+                        best_verified_email = sc
+                break
 
-        verified.append({"email": email, "smtp_status": smtp_result})
+            if smtp_result == "VALID" and not best_verified_email:
+                best_verified_email = email
 
-    result["verified"] = verified
+            verified.append({"email": email, "smtp_status": smtp_result})
+
+        result["verified"] = verified
+
+    if not best_verified_email and scraped_emails:
+        best_verified_email = sorted(list(scraped_emails))[0]
+    elif not best_verified_email and cf_emails:
+        best_verified_email = sorted(list(cf_emails))[0]
+
+    # Step 5: Auto-Update & Merge existing rows in Excel and CSV
+    upsert_data = {
+        "domain": clean_d,
+        "email": best_verified_email,
+        "phone": scraped_phones[0] if scraped_phones else "",
+        "whatsapp": whatsapp_val,
+        "facebook": result["social_profiles"].get("facebook", [""])[0] if result["social_profiles"].get("facebook") else "",
+        "instagram": result["social_profiles"].get("instagram", [""])[0] if result["social_profiles"].get("instagram") else "",
+        "linkedin": result["social_profiles"].get("linkedin", [""])[0] if result["social_profiles"].get("linkedin") else "",
+        "tiktok": result["social_profiles"].get("tiktok", [""])[0] if result["social_profiles"].get("tiktok") else "",
+    }
+    upsert_lead_to_excel_and_csv(upsert_data)
+
     return _maybe_append_support(result, count)
 
 
 # ---------------------------------------------------------------------------
-# 7. NEW - Advanced Zero-Cost OSINT Reconnaissance Tool
+# 7. OSINT Reconnaissance Tool
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -702,15 +762,18 @@ async def osint_recon_domain(domain: str) -> dict:
     - Discovers hidden wholesale/B2B subdomains via SSL Certificate Transparency logs (crt.sh).
     - Identifies corporate mail infrastructure (Google Workspace, Microsoft 365, Zoho) via DNS MX/SPF.
     - Extracts Schema.org JSON-LD corporate metadata (legal name, official telephone, social links).
+    - Auto-updates & merges discovered contacts, WhatsApp, and social profiles into LeadDirect_B2B_Leads.xlsx.
     """
-    clean_domain = domain.replace("https://", "").replace("http://", "").strip("/").split("/")[0].lower()
+    clean_d = clean_domain(domain)
     count = _increment_counter()
-    
+
     recon = {
-        "domain": clean_domain,
+        "domain": clean_d,
         "subdomains": [],
         "mail_provider": "Unknown",
         "mx_hosts": [],
+        "phones": [],
+        "whatsapp": "",
         "social_profiles": {"linkedin": [], "instagram": [], "facebook": [], "tiktok": [], "x": []},
         "organization_meta": {
             "legal_name": None,
@@ -718,13 +781,15 @@ async def osint_recon_domain(domain: str) -> dict:
             "official_email": None,
             "social_links": []
         },
+        "excel_updated": EXCEL_FILE,
+        "csv_updated": CSV_FILE,
         "status": "ok"
     }
 
     # 1. SSL Certificate Transparency Subdomain Enumeration (crt.sh)
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            res = await client.get(f"https://crt.sh/?q=%25.{clean_domain}&output=json")
+            res = await client.get(f"https://crt.sh/?q=%25.{clean_d}&output=json")
             if res.status_code == 200:
                 data = res.json()
                 discovered = set()
@@ -732,8 +797,7 @@ async def osint_recon_domain(domain: str) -> dict:
                     name_val = entry.get("name_value", "")
                     for sub in name_val.split("\n"):
                         sub = sub.strip().lower()
-                        if "*" not in sub and sub.endswith(clean_domain) and sub != clean_domain:
-                            # Highlight B2B, wholesale, dealer, partner, or portal subdomains
+                        if "*" not in sub and sub.endswith(clean_d) and sub != clean_d:
                             if any(k in sub for k in ["b2b", "wholesale", "distributor", "dealer", "portal", "partner", "shop", "app"]):
                                 discovered.add(sub)
                 recon["subdomains"] = sorted(list(discovered))[:15]
@@ -742,7 +806,7 @@ async def osint_recon_domain(domain: str) -> dict:
 
     # 2. DNS MX Provider Fingerprinting
     try:
-        mx_hosts = await get_mx_hosts(clean_domain)
+        mx_hosts = await get_mx_hosts(clean_d)
         recon["mx_hosts"] = mx_hosts
         mx_joined = " ".join(mx_hosts).lower()
         if "google" in mx_joined or "aspmx" in mx_joined:
@@ -758,49 +822,97 @@ async def osint_recon_domain(domain: str) -> dict:
     except Exception:
         pass
 
-    # 3. Schema.org JSON-LD & OpenGraph Metadata
+    # 3. Schema.org JSON-LD & OpenGraph Metadata + Phone / WhatsApp Extraction
     try:
         async with httpx.AsyncClient(
             timeout=8.0,
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         ) as client:
-            resp = await client.get(f"https://{clean_domain}")
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                
-                # Check Schema.org JSON-LD
-                for script in soup.find_all("script", type="application/ld+json"):
-                    try:
-                        content = json.loads(script.string)
-                        if isinstance(content, list):
-                            content = content[0]
-                        if isinstance(content, dict) and content.get("@type") in ["Organization", "Corporation", "LocalBusiness"]:
-                            recon["organization_meta"]["legal_name"] = content.get("name")
-                            recon["organization_meta"]["telephone"] = content.get("telephone")
-                            recon["organization_meta"]["official_email"] = content.get("email")
-                    except Exception:
-                        continue
-                
-                # Extract Structured Social Profiles
-                recon["social_profiles"] = extract_social_links(resp.text)
-                recon["organization_meta"]["social_links"] = [
-                    url for urls in recon["social_profiles"].values() for url in urls
-                ][:10]
+            for path in ("", "/contact", "/contact-us", "/about", "/about-us"):
+                resp = await client.get(f"https://{clean_d}{path}")
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+
+                    # Check Schema.org JSON-LD
+                    for script in soup.find_all("script", type="application/ld+json"):
+                        try:
+                            content = json.loads(script.string)
+                            if isinstance(content, list):
+                                content = content[0]
+                            if isinstance(content, dict) and content.get("@type") in ["Organization", "Corporation", "LocalBusiness"]:
+                                if not recon["organization_meta"]["legal_name"]:
+                                    recon["organization_meta"]["legal_name"] = content.get("name")
+                                if not recon["organization_meta"]["telephone"]:
+                                    raw_tel = content.get("telephone")
+                                    if raw_tel and is_valid_phone(str(raw_tel)):
+                                        recon["organization_meta"]["telephone"] = str(raw_tel)
+                                if not recon["organization_meta"]["official_email"]:
+                                    recon["organization_meta"]["official_email"] = content.get("email")
+                        except Exception:
+                            continue
+
+                    # Extract Structured Social Profiles
+                    found_soc = extract_social_links(resp.text)
+                    for net, links in found_soc.items():
+                        for link in links:
+                            if link not in recon["social_profiles"][net]:
+                                recon["social_profiles"][net].append(link)
+
+                    # Extract Hardened Phones
+                    for p in extract_phone_numbers(resp.text):
+                        if p not in recon["phones"]:
+                            recon["phones"].append(p)
+
+                    # Extract WhatsApp
+                    if not recon["whatsapp"]:
+                        wa = extract_whatsapp(resp.text)
+                        if wa:
+                            recon["whatsapp"] = wa
+
+            recon["organization_meta"]["social_links"] = [
+                url for urls in recon["social_profiles"].values() for url in urls
+            ][:10]
     except Exception:
         pass
+
+    # 4. Social Search Fallback if missing
+    sp = recon["social_profiles"]
+    if not sp["facebook"] and not sp["instagram"] and not sp["linkedin"] and not recon["whatsapp"]:
+        c_name = recon["organization_meta"]["legal_name"] or ""
+        fallback = search_social_fallback(c_name, clean_d)
+        for net, link in fallback.items():
+            if link and not sp.get(net):
+                sp[net] = [link]
+        if fallback.get("whatsapp") and not recon["whatsapp"]:
+            recon["whatsapp"] = fallback["whatsapp"]
+
+    # 5. Auto-Update & Merge existing rows in Excel and CSV
+    official_tel = recon["organization_meta"]["telephone"] or (recon["phones"][0] if recon["phones"] else "")
+    upsert_data = {
+        "domain": clean_d,
+        "company_name": recon["organization_meta"]["legal_name"] or "",
+        "email": recon["organization_meta"]["official_email"] or "",
+        "phone": official_tel,
+        "whatsapp": recon["whatsapp"],
+        "facebook": sp.get("facebook", [""])[0] if sp.get("facebook") else "",
+        "instagram": sp.get("instagram", [""])[0] if sp.get("instagram") else "",
+        "linkedin": sp.get("linkedin", [""])[0] if sp.get("linkedin") else "",
+        "tiktok": sp.get("tiktok", [""])[0] if sp.get("tiktok") else "",
+    }
+    upsert_lead_to_excel_and_csv(upsert_data)
 
     return _maybe_append_support(recon, count)
 
 
 # ---------------------------------------------------------------------------
-# 8. NEW - Google Maps B2B Lead Generator Tool
+# 8. Google Maps B2B Lead Generator Tool
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def search_google_maps_b2b(query: str, target_leads: int = 10) -> str:
     """Searches Google Maps for local/regional B2B businesses, dealers, physical warehouses,
-    extracts: company_name, domain, phone, address, and category, and saves to CSV.
+    extracts: company_name, domain, phone, address, and category, and saves to 12-column Excel and CSV.
     """
     count = _increment_counter()
     leads = await scrape_google_maps_b2b(query, target_leads=target_leads)
@@ -817,6 +929,11 @@ async def search_google_maps_b2b(query: str, target_leads: int = 10) -> str:
             "domain": lead.get("domain", "") or "",
             "email": "Website Form",
             "phone": lead.get("phone", "") or "Not Found",
+            "whatsapp": "",
+            "facebook": "",
+            "instagram": "",
+            "linkedin": "",
+            "tiktok": "",
             "address": lead.get("address", "") or "Not Found",
             "category": lead.get("category", "") or "Not Found",
         }
@@ -836,8 +953,8 @@ async def search_google_maps_b2b(query: str, target_leads: int = 10) -> str:
     md += (
         f"\n\n---\n"
         f"📁 **Results saved to Desktop folder:** `{OUTPUT_DIR}`\n"
-        f"* 📊 **Excel Spreadsheet:** `{excel_path}`\n"
-        f"* 📄 **CSV Export:** `{csv_path}`"
+        f"* 📊 **Excel Spreadsheet (12 Columns):** `{excel_path}`\n"
+        f"* 📄 **CSV Export (12 Columns):** `{csv_path}`"
     )
 
     if count % 5 == 0:
